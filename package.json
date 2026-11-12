@@ -1,0 +1,16 @@
+{
+  "name": "dangdang-internet",
+  "version": "1.9.0",
+  "private": true,
+  "scripts": {
+    "postinstall": "node scripts/prepare-pdf.mjs",
+    "test": "node --test tests/*.test.cjs",
+    "test:browser": "node tests/browser.cjs"
+  },
+  "dependencies": {
+    "pdfjs-dist": "5.6.205"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}

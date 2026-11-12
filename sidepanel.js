@@ -27,24 +27,7 @@ class SidePanelController {
     this.btnModeChat = document.getElementById('btn-mode-chat');
     this.btnModeCode = document.getElementById('btn-mode-code');
     this.codePanel = document.getElementById('code-panel');
-    this.codePrompt = document.getElementById('code-prompt');
-    this.codeOut = document.getElementById('code-out');
-    this.codeStatus = document.getElementById('code-status');
-    this.codeMeta = document.getElementById('code-meta');
-    this.codeBusy = false;
-    this.codePreviewUrl = null;
-    this.workIdle = document.getElementById('work-idle');
-    this.workStatusDock = document.getElementById('work-status-dock');
-    this.workLoadingTitle = document.getElementById('work-loading-title');
-    this.workLoadingTime = document.getElementById('work-loading-time');
-    this.workTimer = null;
-    this.workStartedAt = 0;
     this.workPanel = document.getElementById('work-panel');
-    this.workInputA = document.getElementById('work-input-a');
-    this.workInputB = document.getElementById('work-input-b');
-    this.workLoading = document.getElementById('work-loading');
-    this.workDone = document.getElementById('work-done');
-    this.workDoneLabel = document.getElementById('work-done-label');
     this.inputAreaEl = document.getElementById('input-area');
 
     // 포즈 디스플레이
@@ -56,9 +39,6 @@ class SidePanelController {
     // 상태
     this.currentMood = 'default';
     this.settingsVisible = false;
-    this.workMode = false;
-    this.workModeBusy = false;
-    this.currentWorkResult = null;  // { mode, content, timestamp } — 다운로드용
     this.cachedSettings = null;
     this.sending = false;
     this.lastUserText = '';
@@ -111,14 +91,12 @@ class SidePanelController {
 
   async init() {
     this.bindEvents();
+    await this.restoreAppMode();
     await this.loadHistory();
     await this.loadSettings();
     await this.loadMemoryToUI();
     await this.playMemoryClient?.ready({reunion:true});
     this.maybeShowOnboarding();
-    this.restoreAppMode();
-    this.loadCodeSession();
-    this.restoreWorkState();
     this.scrollToBottom();
 
     if (window.matchMedia) {
@@ -143,7 +121,7 @@ class SidePanelController {
     this.messageInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        this.sendMessage();
+        if (!e.isComposing) this.sendMessage();
       }
     });
 
@@ -198,27 +176,9 @@ class SidePanelController {
     if (this.btnModeCode) {
       this.btnModeCode.addEventListener('click', () => this.setAppMode('code'));
     }
-    this.bindCodeMode();
-
-    // 업무 버튼
-    document.getElementById('btn-work-defect').addEventListener('click', () => this.runWorkMode('defect'));
-    document.getElementById('btn-work-novelty').addEventListener('click', () => this.runWorkMode('novelty'));
-    document.getElementById('btn-work-diagnosis').addEventListener('click', () => this.runWorkMode('diagnosis'));
-    document.querySelectorAll('[data-dl-fmt]').forEach((btn) => {
-      btn.addEventListener('click', () => this.downloadWorkResult(btn.getAttribute('data-dl-fmt')));
-    });
-
+    this.coding = new CodingPanel(this);
+    this.patents = new PatentPanel(this);
     this.bindFileUploads();
-
-    // 업무 입력 글자 수
-    this.workInputA.addEventListener('input', () => {
-      document.getElementById('work-char-count-a').textContent =
-        this.workInputA.value.length.toLocaleString() + '자';
-    });
-    this.workInputB.addEventListener('input', () => {
-      document.getElementById('work-char-count-b').textContent =
-        this.workInputB.value.length.toLocaleString() + '자';
-    });
 
     // Background 메시지 수신
     chrome.runtime.onMessage.addListener((msg) => this.handleBackgroundMessage(msg));
@@ -245,6 +205,10 @@ class SidePanelController {
   // ============================================================
 
   async sendMessage(overrideText) {
+    if (overrideText == null && this.coding.chatMode.checked) {
+      await this.coding.fromChat();
+      return;
+    }
     const text = (overrideText ?? this.messageInput.value).trim();
     if (!text || this.sending) return;
 
@@ -404,7 +368,9 @@ class SidePanelController {
       const errorMsg = (err && err.getUserMessage)
         ? err.getUserMessage()
         : '앗, 연결이 안 되는 것 같아... 잠시 후에 다시 시도해줄래? (´•ω•̥`)';
-      this.finalizeStreamingBubble(streamEls, errorMsg, { error: true, retryText: text });
+      const partial = err.partialContent && extractStreamingVisibleText(err.partialContent);
+      this.finalizeStreamingBubble(streamEls, partial ? partial + '\n\n' + errorMsg : errorMsg,
+        { error: true, retryText: text });
       this.updateAvatarMood('sad');
       await StorageManager.addMessage('assistant', errorMsg, 'sad', { error: true }, { epoch: requestEpoch ?? undefined });
       chrome.runtime.sendMessage({
@@ -785,6 +751,7 @@ class SidePanelController {
     // 기능 토글
     document.getElementById('toggle-proactive').checked = settings.proactiveEnabled;
     document.getElementById('toggle-content-aware').checked = settings.contentAwarenessEnabled;
+    document.getElementById('toggle-model-memory').checked = settings.sendMemoryToModel;
     const approachToggle = document.getElementById('toggle-approach');
     if (approachToggle) approachToggle.checked = settings.approachEnabled !== false;
     const wanderToggle = document.getElementById('toggle-wander');
@@ -915,46 +882,23 @@ class SidePanelController {
    * P0-3: API 키는 "해당 제공자 origin에 저장된 키"만 표시한다.
    * 저장된 키가 없으면 빈 입력 — 이전 제공자의 키가 다른 제공자로 넘어가지 않음.
    */
-  async onPresetChanged(presetId) {
+  onPresetChanged(presetId) {
     const preset = CONFIG.apiPresets[presetId];
     if (!preset) return;
-
+    const base = document.getElementById('input-api-base');
+    const key = document.getElementById('input-api-key');
     if (presetId !== 'custom') {
-      document.getElementById('input-api-base').value = preset.apiBase || '';
-      document.getElementById('input-model').value = preset.model || '';
-
-      const keyInput = document.getElementById('input-api-key');
-      try {
-        const keys = (typeof StorageManager !== 'undefined')
-          ? await StorageManager.getApiKeys()
-          : {};
-        const origin = normalizeApiOrigin(preset.apiBase);
-        const stored = keys[origin];
-        if (stored) {
-          keyInput.value = stored;
-        } else if (presetId === 'ollama') {
-          keyInput.value = 'ollama'; // 로컬 전용 표식
-        } else {
-          keyInput.value = '';
-        }
-        this._keyOrigin = origin;
-      } catch (_) {
-        keyInput.value = '';
-      }
-    } else {
-      // custom: 주소는 유지하되 키는 "현재 주소 origin의 저장 키" 기준으로 맞춤
-      try {
-        const baseEl = document.getElementById('input-api-base');
-        const keyInput = document.getElementById('input-api-key');
-        const keys = (typeof StorageManager !== 'undefined')
-          ? await StorageManager.getApiKeys()
-          : {};
-        const origin = normalizeApiOrigin(baseEl.value.trim());
-        keyInput.value = keys[origin] || '';
-        this._keyOrigin = origin;
-      } catch (_) { /* 무시 */ }
+      base.value = preset.apiBase;
+      document.getElementById('input-model').value = preset.model;
     }
-
+    const origin = normalizeApiOrigin(base.value);
+    key.value = '';
+    this._keyOrigin = origin;
+    this._keySwapPromise = StorageManager.getApiKeys().then(keys => {
+      if (document.getElementById('preset-selector').value !== presetId
+        || normalizeApiOrigin(base.value) !== origin || key.value) return;
+      key.value = keys[origin] || (presetId === 'ollama' ? 'ollama' : '');
+    }).catch(() => {});
     this.updatePresetDescription(presetId);
   }
 
@@ -1071,6 +1015,8 @@ class SidePanelController {
     });
 
     // 기능 토글
+    document.getElementById('toggle-model-memory').onchange = event =>
+      this.updateSetting({ sendMemoryToModel: event.target.checked });
     document.getElementById('toggle-proactive').onchange = (e) =>
       this.updateSetting({ proactiveEnabled: e.target.checked });
     document.getElementById('toggle-content-aware').onchange = (e) =>
@@ -1154,6 +1100,7 @@ class SidePanelController {
     }
     // 데이터 관리
     document.getElementById('btn-export').onclick = () => this.exportConversation();
+    document.getElementById('btn-import').onclick = () => document.getElementById('import-file').click();
     document.getElementById('import-file').onchange = (e) => this.importConversation(e);
 
     // 저장소 정보 업데이트
@@ -1167,6 +1114,7 @@ class SidePanelController {
    * API 설정 저장 (apiBase, model, apiKey 한 번에)
    */
   async saveApiConfig() {
+    if (this._keySwapPromise) await this._keySwapPromise;
     const apiBase = document.getElementById('input-api-base').value.trim();
     const model = document.getElementById('input-model').value.trim();
     const apiKey = document.getElementById('input-api-key').value.trim();
@@ -1185,9 +1133,6 @@ class SidePanelController {
       return;
     }
 
-    // P0 리뷰 3차: 주소 변경에 따른 키 교체가 진행 중이면 끝날 때까지 대기
-    if (this._keySwapPromise) await this._keySwapPromise;
-
     // P0 리뷰 2차: 저장 전 키 origin 확인 — 다른 주소의 키는 저장하지 않음
     let effectiveKey = apiKey;
     try {
@@ -1198,6 +1143,9 @@ class SidePanelController {
         return;
       }
     } catch (_) { /* 무시 */ }
+
+    try { chatCompletionURL({ apiBase, model, apiKey: effectiveKey, apiPreset: presetId }); }
+    catch (error) { this.showToast(error.getUserMessage?.() || error.message, 'error'); return; }
 
     // API 필드는 배경에서 제공자·origin별로 분리 저장됨 (P0-3)
     const response = await chrome.runtime.sendMessage({
@@ -1233,6 +1181,7 @@ class SidePanelController {
    * API 연결 테스트
    */
   async testApiConnection() {
+    if (this._keySwapPromise) await this._keySwapPromise;
     const apiBase = document.getElementById('input-api-base').value.trim();
     const model = document.getElementById('input-model').value.trim();
     const apiKey = document.getElementById('input-api-key').value.trim();
@@ -1241,9 +1190,6 @@ class SidePanelController {
       this.showToast('API 주소와 모델명을 먼저 입력해주세요!', 'error');
       return;
     }
-
-    // P0 리뷰 3차: 주소 변경에 따른 키 교체가 진행 중이면 끝날 때까지 대기
-    if (this._keySwapPromise) await this._keySwapPromise;
 
     // P0 리뷰 2차: 전송 직전 키 origin 확인 — 다른 주소의 키가 섞였으면 보내지 않음
     let effectiveKey = apiKey;
@@ -1270,8 +1216,8 @@ class SidePanelController {
         modelMaxOutputTokens: Number(document.getElementById('input-model-max-out')?.value) || 8192
       });
       await client.chat([{ role: 'user', content: 'Reply with OK.' }], {
-        maxTokens: isOpenAILuna(client) ? 32 : 5,
-        reasoningEffort: 'none', timeoutMs: 10000, bodyTimeoutMs: 10000
+        maxTokens: isExaone(client) ? 1024 : isOpenAILuna(client) ? 32 : 5,
+        reasoningEffort: 'none', timeoutMs: 25000, bodyTimeoutMs: 25000
       });
       resultEl.classList.remove('testing', 'error');
       resultEl.classList.add('success');
@@ -1520,7 +1466,6 @@ class SidePanelController {
   setAppMode(mode) {
     const next = mode === 'work' || mode === 'code' ? mode : 'chat';
     this.appMode = next;
-    this.workMode = next === 'work';
 
     this.btnModeChat?.classList.toggle('active', next === 'chat');
     this.btnWorkMode?.classList.toggle('active', next === 'work');
@@ -1537,7 +1482,6 @@ class SidePanelController {
     if (next === 'work') {
       this.updateAvatarMood('study');
       this.moodLabel.textContent = '업무 중 📚';
-      this.updateWorkLabels('novelty');
     } else if (next === 'code') {
       this.updateAvatarMood('think');
       this.moodLabel.textContent = '코딩 중 ⚡';
@@ -1549,554 +1493,8 @@ class SidePanelController {
     chrome.storage.local.set({ [CONFIG.storageKeys.lastAppMode]: next }).catch(() => {});
   }
 
-  bindCodeMode() {
-    document.getElementById('btn-code-gen')?.addEventListener('click', () => this.generateCode(false));
-    document.getElementById('btn-code-revise')?.addEventListener('click', () => this.generateCode(true));
-    document.getElementById('btn-code-preview')?.addEventListener('click', () => this.previewCode());
-    document.getElementById('btn-code-dl')?.addEventListener('click', () => this.downloadCode());
-    document.getElementById('btn-code-copy')?.addEventListener('click', () => this.copyCode());
-    this.codeOut?.addEventListener('input', () => {
-      this.updateCodeMeta();
-      this.saveCodeSession();
-    });
-    this.codePrompt?.addEventListener('input', () => this.saveCodeSession());
-  }
-
-  setCodeStatus(msg, meta) {
-    if (this.codeStatus) this.codeStatus.textContent = msg;
-    if (meta && this.codeMeta) this.codeMeta.textContent = meta;
-    this.updateCodeMeta();
-  }
-
-  updateCodeMeta() {
-    const t = this.codeOut?.value || '';
-    const lines = t ? t.split('\n').length : 0;
-    if (this.codeMeta) {
-      this.codeMeta.textContent = `Ln ${lines} · ${t.length.toLocaleString()}자 · UTF-8 · Vanilla`;
-    }
-  }
-
-  extractGeneratedHtml(raw) {
-    const text = String(raw || '').trim();
-    const fence = text.match(/```(?:html)?\s*([\s\S]*?)```/i);
-    let html = fence ? fence[1].trim() : text;
-    const doc = html.match(/<!DOCTYPE html[\s\S]*$/i) || html.match(/<html[\s\S]*$/i);
-    if (doc) html = doc[0].trim();
-    return html;
-  }
-
-  async generateCode(revise) {
-    if (this.codeBusy) {
-      this.showToast('아직 코드를 만들고 있어! 조금만 기다려줘.', 'info');
-      return;
-    }
-    const prompt = (this.codePrompt?.value || '').trim();
-    const current = (this.codeOut?.value || '').trim();
-    if (!prompt) {
-      this.setCodeStatus('무엇을 만들지 먼저 적어줘');
-      this.codePrompt?.focus();
-      return;
-    }
-    if (revise && !current) {
-      this.setCodeStatus('다듬을 코드가 아직 없어. 먼저 만들어줘!');
-      return;
-    }
-    const settings = this.cachedSettings || await this.ensureSettings();
-    if (!hasApiReady(settings)) {
-      this.showOnboarding();
-      return;
-    }
-
-    // P1 리뷰 3차: busy 설정부터 해제까지 try/finally로 감싸
-    // (hard 오류 등 조기 반환 경로에서도 codeBusy가 풀린다)
-    try {
-      this.codeBusy = true;
-      this.behaviorController?.setBusy('code',true,'study');
-      this.clearPoseSpeech();
-      this.setCodeStatus(revise ? '기존 코드를 다듬는 중…' : '코드를 만드는 중…', 'compile · waiting');
-      if(!this.behaviorController)this.updateAvatarMood('study');
-      // P0-4: 출력은 모델 최대 출력 상한 안에서
-      const codeMaxOut = Math.min(
-        settings.modelMaxOutputTokens || CONFIG.modelLimits.defaultMaxOutputTokens,
-        Math.max(4096, settings.maxTokens || 4096)
-      );
-      if (typeof llmClient !== 'undefined') {
-        llmClient.applyConfig({
-          apiBase: settings.apiBase,
-          model: settings.model,
-          apiKey: settings.apiKey || '',
-          maxTokens: codeMaxOut,
-          apiPreset: settings.apiPreset,
-          modelContextTokens: settings.modelContextTokens,
-          modelMaxOutputTokens: settings.modelMaxOutputTokens
-        });
-      }
-
-      let system = '';
-      try {
-        system = (await StorageManager.get('code_prompt_cache')) || '';
-      } catch (_) { /* fallback below */ }
-      if (!system) {
-        try {
-          const res = await fetch(chrome.runtime.getURL('prompts/codeprompt.txt'));
-          if (res.ok) system = await res.text();
-        } catch (_) { /* use inline */ }
-      }
-      if (!system) {
-        system = '단일 HTML 파일만 출력하세요. CDN 금지. Vanilla JS+CSS.';
-      }
-
-      const user = revise
-        ? `다음 HTML을 개선하세요. 요청: ${prompt}\n\n--- 현재 코드 ---\n${current}`
-        : prompt;
-
-      const messages = [
-        { role: 'system', content: system },
-        { role: 'user', content: user }
-      ];
-
-      // P1 리뷰 2차: 코드 생성·수정에도 공통 예산 강제 적용 (스트림 실패 재시도 포함)
-      const enforcedCode = enforceRequestBudget({
-        apiConfig: settings,
-        messages,
-        outputReserveTokens: codeMaxOut
-      });
-      if (enforcedCode.trimmed === 'hard') {
-        throw new Error('모델 컨텍스트 상한이 너무 작아 요청을 만들 수 없어요. 설정에서 컨텍스트 상한을 올려주세요!');
-      }
-      if (enforcedCode.trimmed) {
-        this.showToast('요청이 예산을 넘어 일부를 잘랐어요 ⚠️', 'info');
-      }
-      const sendMessages = enforcedCode.messages;
-      const sendMaxTokens = enforcedCode.budget.maxOutput;
-
-      let full = '';
-      try {
-        const streamed = await llmClient.chatStream(sendMessages, {
-          temperature: 0.35,
-          maxTokens: sendMaxTokens
-        }, (acc) => {
-          full = acc;
-          if (this.codeOut) this.codeOut.value = this.extractGeneratedHtml(acc);
-          this.updateCodeMeta();
-        });
-        full = streamed.content || full;
-      } catch (streamErr) {
-        if (!streamErr.canFallbackToChat?.()) throw streamErr;
-        const fallback = await llmClient.chatWithRetry(sendMessages, {
-          temperature: 0.35,
-          maxTokens: sendMaxTokens
-        });
-        full = fallback.content || '';
-      }
-      const html = this.extractGeneratedHtml(full);
-      if (this.codeOut) this.codeOut.value = html;
-      this.updateCodeMeta();
-      this.saveCodeSession();
-      this.setCodeStatus(html ? '만들었어! 아래에서 실행해봐 ⚡' : '응답이 비어 있어. 다시 해볼래?');
-      this.updateAvatarMood(html ? 'excited' : 'sad');
-      if (html) this.showToast('미니앱 초안이 나왔어! 아래에서 실행해봐 ⚡', 'success');
-    } catch (err) {
-      console.error('[반려AI] 코딩 실패:', err.statusCode || err.name || '오류');
-      const msg = err.getUserMessage ? err.getUserMessage() : (err.message || '실패');
-      this.setCodeStatus('실패: ' + msg);
-      this.updateAvatarMood('sad');
-      this.showToast(msg, 'error');
-    } finally {
-      this.codeBusy = false;
-      this.behaviorController?.setBusy('code',false);
-    }
-  }
-
-  previewCode() {
-    const html = (this.codeOut?.value || '').trim();
-    if (!html) {
-      this.setCodeStatus('실행할 코드가 아직 없어');
-      return;
-    }
-    const name = this.downloadCode({ quiet: true });
-    this.setCodeStatus('파일을 저장했어. 크롬에서 그 HTML을 열어줘');
-    this.showToast(
-      '확장 안에서는 버튼·저장(localStorage)이 보안으로 막혀.\n받은 파일(' + name + ')을 크롬으로 직접 열어줘!',
-      'info',
-      5000
-    );
-  }
-
-  downloadCode({ quiet = false } = {}) {
-    const html = (this.codeOut?.value || '').trim();
-    if (!html) {
-      this.setCodeStatus('받을 코드가 아직 없어');
-      return '';
-    }
-    const name = '댕댕이_미니앱_' + new Date().toISOString().slice(0, 10) + '.html';
-    FileIO.downloadBlob(new Blob([html], { type: 'text/html;charset=utf-8' }), name);
-    this.setCodeStatus('다운로드했어: ' + name);
-    if (!quiet) this.showToast(name + ' 저장했어!', 'success');
-    return name;
-  }
-
-  async copyCode() {
-    const html = (this.codeOut?.value || '').trim();
-    if (!html) {
-      this.setCodeStatus('복사할 코드가 아직 없어');
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(html);
-      this.setCodeStatus('클립보드에 복사했어');
-    } catch (_) {
-      this.codeOut?.select();
-      this.setCodeStatus('복사가 막혀 있어. 직접 선택해서 복사해줘');
-    }
-  }
-
-  saveCodeSession() {
-    const data = {
-      prompt: this.codePrompt?.value || '',
-      html: this.codeOut?.value || '',
-      updatedAt: Date.now()
-    };
-    chrome.storage.local.set({ [CONFIG.storageKeys.codeSession]: data }).catch(() => {});
-  }
-
-  async loadCodeSession() {
-    try {
-      const stored = await chrome.storage.local.get(CONFIG.storageKeys.codeSession);
-      const data = stored[CONFIG.storageKeys.codeSession];
-      if (!data) return;
-      if (this.codePrompt && data.prompt) this.codePrompt.value = data.prompt;
-      if (this.codeOut && data.html) this.codeOut.value = data.html;
-      this.updateCodeMeta();
-    } catch (_) { /* ignore */ }
-  }
-
-  /**
-   * 업무 유형에 따라 라벨 변경
-   */
-  updateWorkLabels(mode) {
-    const labelA = document.getElementById('work-label-a');
-    const labelB = document.getElementById('work-label-b');
-
-    switch (mode) {
-      case 'defect':
-        labelA.textContent = '📄 명세서 (특허 명세서 전체 — 청구항 추출 대상)';
-        labelB.textContent = '📋 추가 메모 (선택 사항 — 비워두면 무시됨)';
-        break;
-      case 'novelty':
-        labelA.textContent = '📄 출원발명 (명세서 A)';
-        labelB.textContent = '📋 비교대상발명 (명세서 B)';
-        break;
-      case 'diagnosis':
-        labelA.textContent = '📄 출원발명 (명세서)';
-        labelB.textContent = '📋 의견제출통지서';
-        break;
-    }
-  }
-
-  /**
-   * 업무 모드 실행 (P0-5: runId 부여, 상태 구분, 실제 취소 연결)
-   */
-  async runWorkMode(mode) {
-    if (this.workModeBusy) {
-      this.showToast('아직 검토 중이에요... 조금만 기다려줘! 📚', 'info');
-      return;
-    }
-
-    const textA = this.workInputA.value.trim();
-    const textB = this.workInputB.value.trim();
-
-    if (!textA) {
-      this.showToast('명세서를 입력해주세요! (첫 번째 입력창)', 'error');
-      return;
-    }
-
-    if ((mode === 'novelty' || mode === 'diagnosis') && !textB) {
-      this.showToast('두 번째 입력창도 채워주세요!', 'error');
-      return;
-    }
-
-    const modeLabels = {
-      defect: '기재불비 검토',
-      novelty: '신규성/진보성 검토',
-      diagnosis: '의견제출통지서 진단'
-    };
-
-    this.updateWorkLabels(mode);
-    this.workModeBusy = true;
-    this.currentWorkResult = null;
-    const runId = 'work_' + generateId();
-    this.currentRunId = runId;
-    this.setWorkButtonsDisabled(true);
-    this.showWorkStatus('loading', modeLabels[mode]);
-    if(!this.behaviorController)this.updateAvatarMood('study');
-    this.showToast(`${modeLabels[mode]}를 시작했어! 아래를 봐줘 📚`, 'info');
-
-    console.log(`[반려AI] 💼 업무 모드 실행 [${runId}]: ${modeLabels[mode]} (A: ${textA.length}자, B: ${textB.length}자)`);
-
-    const WORK_TIMEOUT_MS = 180000;
-    try {
-      const response = await Promise.race([
-        chrome.runtime.sendMessage({
-          type: 'work_mode',
-          data: { mode, textA, textB, runId }
-        }),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(Object.assign(new Error('UI_TIMEOUT'), { uiTimeout: true })), WORK_TIMEOUT_MS)
-        )
-      ]);
-
-      if (this.currentRunId !== runId) return; // 새 실행이 시작됨
-      console.log(`[반려AI] 업무 모드 직접 응답 [${runId}]:`, response?.type);
-      this.handleWorkResponse(runId, response);
-    } catch (err) {
-      if (this.currentRunId !== runId) return;
-      console.error('[반려AI] ❌ 업무 모드 연결 오류:', err.statusCode || err.name || '오류');
-      if (err.uiTimeout) {
-        // P0-5: UI 타임아웃은 실제 요청 취소와 연결
-        chrome.runtime.sendMessage({ type: MSG_WORK_CANCEL, data: { runId } }).catch(() => {});
-        this.finishWorkWithError('timed_out',
-          '응답 시간이 초과되었어요 (180초)... 검토를 취소했어요. 문서를 더 작게 나눠 다시 시도해주세요!');
-      } else {
-        this.finishWorkWithError('failed', '연결 오류: ' + (err.message || '알 수 없는 오류'));
-      }
-    }
-  }
-
-  /**
-   * 업무 응답 처리 (직접 응답·방송 공용) — runId 일치 시 한 번만 반영 (P0-5)
-   */
-  handleWorkResponse(runId, response) {
-    if (!response || this.currentRunId !== runId) return;
-
-    if (response.type === MSG_WORK_RESULT) {
-      const d = response.data || {};
-      const content = d.content || '';
-      if (!content) {
-        this.finishWorkWithError(d.status === 'partial' ? 'partial' : 'failed',
-          'AI가 빈 응답을 반환했어요. API 설정을 확인해주세요!');
-        return;
-      }
-      // ✅ 성공(부분 포함): 다운로드 가능한 결과 — 상태를 함께 기록
-      this.currentWorkResult = {
-        mode: d.mode,
-        content,
-        title: this.workTitleFor(d.mode),
-        timestamp: new Date().toISOString(),
-        runId,
-        status: d.status || 'succeeded',
-        processed: d.processed,
-        total: d.total
-      };
-      this.workDoneLabel.textContent = d.status === 'partial'
-        ? `${this.workTitleFor(d.mode)} 완료 (일부 범위 미처리 ⚠️) 아래에서 받아가세요`
-        : `${this.workTitleFor(d.mode)} 완료! 아래에서 받아가세요`;
-      this.showWorkStatus('done');
-      if (d.status === 'partial') {
-        this.showToast('일부 범위가 미처리됐어요. 결과의 "검토 범위" 섹션을 확인해줘! ⚠️', 'info', 5000);
-      }
-      if(this.behaviorController)this.behaviorController.temporaryReaction('work-complete','excited',2100);
-      else this.updateAvatarMood('excited');
-      this.workModeBusy = false;
-      this.setWorkButtonsDisabled(false);
-      this.currentRunId = null;
-      return;
-    }
-
-    if (response.type === MSG_WORK_ERROR) {
-      this.finishWorkWithError(response.data?.status || 'failed',
-        response.data?.message || '오류가 발생했어요');
-      return;
-    }
-
-    if (response.type === MSG_ERROR) {
-      // ❌ 실패는 오류 영역에만 표시 — 다운로드 가능한 성공 결과를 만들지 않음 (P0-5)
-      this.finishWorkWithError('failed', response.data?.message || '오류가 발생했어요');
-      return;
-    }
-
-    console.warn('[반려AI] ⚠️ 예상치 못한 업무 모드 응답:', JSON.stringify(response).slice(0, 200));
-    this.finishWorkWithError('failed', '예상치 못한 응답이 돌아왔어요. 확장을 새로고침 해보세요.');
-  }
-
-  workTitleFor(mode) {
-    const modeLabels = {
-      defect: '기재불비 검토',
-      novelty: '신규성/진보성 검토',
-      diagnosis: '의견제출통지서 진단'
-    };
-    return modeLabels[mode] || '분석 결과';
-  }
-
-  finishWorkWithError(status, message) {
-    this.showWorkStatus('idle');
-    this.showToast(message, 'error', 4000);
-    if(this.behaviorController)this.behaviorController.temporaryReaction('work-error','sad',2100);
-    else this.updateAvatarMood('sad');
-    this.workModeBusy = false;
-    this.setWorkButtonsDisabled(false);
-    this.currentRunId = null;
-  }
-
-  /**
-   * 패널 재열기 시 실행 중인 업무 상태 복원 (P0-5)
-   * - 진행 중이면 재요청 없이 대기(중복 API 호출 금지)
-   * - 워커가 죽어 응답이 없으면 일정 시간 후 실패로 표시
-   */
-  async restoreWorkState() {
-    try {
-      const r = await chrome.storage.session.get(CONFIG.storageKeys.workRuns);
-      const runs = r[CONFIG.storageKeys.workRuns];
-      if (!runs || typeof runs !== 'object') return;
-      const latest = Object.entries(runs)
-        .filter(([, s]) => s && s.status !== 'cancelled')
-        .sort((a, b) => (b[1].startedAt || 0) - (a[1].startedAt || 0))[0];
-      if (!latest) return;
-      const [runId, state] = latest;
-      const WORK_STALE_MS = 10 * 60 * 1000;
-
-      if (state.status === 'running') {
-        const elapsed = Date.now() - (state.startedAt || 0);
-        if (elapsed > WORK_STALE_MS) {
-          // 워커가 종료되어 응답이 없는 실행 — 실패로 정리
-          chrome.storage.session.get(CONFIG.storageKeys.workRuns).then((res) => {
-            const runs2 = res[CONFIG.storageKeys.workRuns] || {};
-            runs2[runId] = { ...runs2[runId], status: 'failed', message: '워커가 종료되어 실행이 중단된 것 같아' };
-            chrome.storage.session.set({ [CONFIG.storageKeys.workRuns]: runs2 }).catch(() => {});
-          }).catch(() => {});
-          return;
-        }
-        // 진행 중 재가입: 재전송 없이 방송 대기
-        this.currentRunId = runId;
-        this.workModeBusy = true;
-        this.setWorkButtonsDisabled(true);
-        this.showWorkStatus('loading', this.workTitleFor(state.mode));
-        // 워커 사망 대비 감시
-        setTimeout(() => {
-          if (this.currentRunId === runId && this.workModeBusy && !this.currentWorkResult) {
-            this.finishWorkWithError('failed', '워커가 종료되어 실행이 중단된 것 같아... 다시 실행해줘!');
-          }
-        }, Math.max(5000, WORK_STALE_MS - elapsed));
-        return;
-      }
-
-      // P1 리뷰: 완료·부분 완료 결과는 본문까지 복원 (패널을 닫은 동안 완료된 경우)
-      if ((state.status === 'succeeded' || state.status === 'partial') && state.result?.content) {
-        this.currentWorkResult = {
-          mode: state.result.mode,
-          content: state.result.content,
-          title: this.workTitleFor(state.result.mode),
-          timestamp: new Date(state.result.finishedAt || state.updatedAt || Date.now()).toISOString(),
-          runId,
-          status: state.status,
-          processed: state.result.processed,
-          total: state.result.total
-        };
-        this.workDoneLabel.textContent = state.status === 'partial'
-          ? `${this.workTitleFor(state.result.mode)} 완료 (일부 범위 미처리 ⚠️) 아래에서 받아가세요`
-          : `${this.workTitleFor(state.result.mode)} 완료! 아래에서 받아가세요`;
-        this.showWorkStatus('done');
-        return;
-      }
-
-      if (state.status === 'failed' || state.status === 'timed_out') {
-        this.finishWorkWithError(state.status, state.message || '업무 처리 중 오류가 발생했어요');
-      }
-    } catch (_) { /* 무시 */ }
-  }
-
-
-  setWorkButtonsDisabled(disabled) {
-    ['btn-work-defect', 'btn-work-novelty', 'btn-work-diagnosis'].forEach((id) => {
-      const btn = document.getElementById(id);
-      if (btn) btn.disabled = disabled;
-    });
-  }
-
-  showWorkStatus(state, label = '') {
-    this.behaviorController?.setBusy('work',state==='loading','study');
-    this.clearPoseSpeech();
-    this.workIdle?.classList.toggle('hidden', state !== 'idle');
-    this.workLoading?.classList.toggle('hidden', state !== 'loading');
-    this.workDone?.classList.toggle('hidden', state !== 'done');
-    this.workStatusDock?.classList.toggle('is-loading', state === 'loading');
-    this.workStatusDock?.classList.toggle('is-done', state === 'done');
-
-    if (state === 'loading') {
-      if (this.workLoadingTitle) {
-        this.workLoadingTitle.textContent = `${label || '검토'} 진행 중`;
-      }
-      this.startWorkTimer();
-    } else {
-      this.stopWorkTimer();
-    }
-
-    requestAnimationFrame(() => {
-      this.workStatusDock?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-      if (this.workPanel) this.workPanel.scrollTop = this.workPanel.scrollHeight;
-    });
-  }
-
-  startWorkTimer() {
-    this.stopWorkTimer();
-    this.workStartedAt = Date.now();
-    const tick = () => {
-      const sec = Math.floor((Date.now() - this.workStartedAt) / 1000);
-      if (this.workLoadingTime) {
-        this.workLoadingTime.textContent = sec < 60 ? `${sec}초` : `${Math.floor(sec / 60)}분 ${sec % 60}초`;
-      }
-    };
-    tick();
-    this.workTimer = setInterval(tick, 500);
-  }
-
-  stopWorkTimer() {
-    if (this.workTimer) {
-      clearInterval(this.workTimer);
-      this.workTimer = null;
-    }
-  }
-
-  /**
-   * 업무 결과 다운로드 (md / txt / json / pdf / hwpx)
-   */
-  async downloadWorkResult(format = 'md') {
-    if (!this.currentWorkResult || !this.currentWorkResult.content) {
-      this.showToast('다운로드할 결과가 없어요! 😢', 'error');
-      return;
-    }
-
-    const { mode, content, title } = this.currentWorkResult;
-    const modeLabels = {
-      defect: '기재불비 검토',
-      novelty: '신규성/진보성 검토',
-      diagnosis: '의견제출통지서 진단'
-    };
-    const modeLabel = modeLabels[mode] || '특허 심사';
-    const dateStr = new Date().toISOString().slice(0, 10);
-    const timeStr = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
-
-    try {
-      const filename = await FileIO.exportResult({
-        format,
-        title,
-        body: content,
-        meta: {
-          '검토 유형': modeLabel,
-          '검토 일시': `${dateStr} ${timeStr}`,
-          mode: modeLabel
-        }
-      });
-      this.showToast(`결과를 다운로드했어요! 📥\n${filename}`, 'success');
-    } catch (err) {
-      console.error('[반려AI] 다운로드 실패:', err);
-      this.showToast('다운로드에 실패했어... ' + (err.message || ''), 'error');
-    }
-  }
-
   bindFileUploads() {
     const chatInput = document.getElementById('chat-file-input');
-    const workInput = document.getElementById('work-file-input');
     const btnAttach = document.getElementById('btn-attach');
 
     if (btnAttach && chatInput) {
@@ -2108,25 +1506,7 @@ class SidePanelController {
       });
     }
 
-    this._workUploadTarget = 'a';
-    document.querySelectorAll('.btn-upload-file').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        this._workUploadTarget = btn.getAttribute('data-target') || 'a';
-        workInput?.click();
-      });
-    });
-    if (workInput) {
-      workInput.addEventListener('change', async (e) => {
-        const file = e.target.files?.[0];
-        e.target.value = '';
-        const field = this._workUploadTarget === 'b' ? this.workInputB : this.workInputA;
-        if (file) await this.importFileToField(file, field, { chat: false });
-      });
-    }
-
     this.enableDrop(this.messageInput, (file) => this.importFileToField(file, this.messageInput, { chat: true }));
-    this.enableDrop(this.workInputA, (file) => this.importFileToField(file, this.workInputA, { chat: false }));
-    this.enableDrop(this.workInputB, (file) => this.importFileToField(file, this.workInputB, { chat: false }));
   }
 
   enableDrop(el, onFile) {
@@ -2319,35 +1699,6 @@ class SidePanelController {
           this.showPoseSpeech(['chat','proactive'].includes(msg.data.source)?CompanionPolicy.completion(msg.data.content,{source:msg.data.source==='proactive'?'proactive':'complete',id:msg.data.eventId}):null);
         }
         break;
-
-      // ★ 업무 모드 실행 시작 broadcast (P0-5)
-      case MSG_WORK_STARTED: {
-        const d = msg.data || {};
-        if (this.currentRunId === d.runId && this.workMode && this.workModeBusy) {
-          this.showWorkStatus('loading', this.workTitleFor(d.mode));
-        }
-        break;
-      }
-
-      // ★ 업무 모드 결과 broadcast — runId 일치 시 한 번만 반영 (P0-5)
-      case MSG_WORK_RESULT: {
-        const d = msg.data || {};
-        if (this.currentRunId === d.runId && this.workMode && !this.currentWorkResult) {
-          console.log('[반려AI] 📡 work_result broadcast 수신 [%s]:', d.runId, d.status);
-          this.handleWorkResponse(d.runId, { type: MSG_WORK_RESULT, data: d });
-        }
-        break;
-      }
-
-      // ★ 업무 모드 오류 broadcast — 실패를 성공 결과로 만들지 않음 (P0-5)
-      case MSG_WORK_ERROR: {
-        const d = msg.data || {};
-        if (this.currentRunId === d.runId && this.workMode) {
-          console.warn('[반려AI] 📡 work_error broadcast 수신 [%s]:', d.runId, d.status);
-          this.finishWorkWithError(d.status || 'failed', d.message || '업무 처리 중 오류가 발생했어요');
-        }
-        break;
-      }
 
       case MSG_ERROR:
         // 기타 오류는 토스트만 (업무 실패를 다운로드 결과로 만들지 않음)

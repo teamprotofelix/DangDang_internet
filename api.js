@@ -23,11 +23,61 @@ function buildChatCompletionRequest(apiConfig, messages, options = {}, stream = 
     if (body.reasoning_effort === 'none') {
       body.temperature = options.temperature ?? CONFIG.api.temperature;
     }
+  } else if (isExaone(apiConfig)) {
+    if (!Number.isInteger(requested) || requested <= 0) throw new APIError('생성 예산은 양수여야 합니다.', 400);
+    const budget = computeRequestBudget({ apiConfig, messages, outputReserveTokens: requested });
+    if (!budget.ok) throw new APIError('EXAONE 컨텍스트 상한을 초과했습니다.', 400,
+      '{"error":{"code":"context_length_exceeded"}}');
+    body.max_tokens = Math.min(requested, budget.maxOutput);
+    body.reasoning_effort = ['low', 'high', 'max'].includes(options.reasoningEffort)
+      ? options.reasoningEffort : 'low';
+    body.temperature = options.temperature ?? 1;
   } else {
     body.max_tokens = requested;
     body.temperature = options.temperature ?? CONFIG.api.temperature;
   }
   return body;
+}
+
+function chatCompletionURL(apiConfig) {
+  let url;
+  try { url = new URL(apiConfig.apiBase); }
+  catch { throw new APIError('API 주소 형식을 확인해 주세요.', 422); }
+  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  if (url.username || url.password || url.search || url.hash
+    || (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback
+      && (!apiConfig.apiKey || apiConfig.apiKey === 'ollama')))) {
+    throw new APIError('API 주소에 HTTPS를 사용해 주세요. 키 없는 로컬 연결에는 HTTP를 사용할 수 있습니다.', 422);
+  }
+  const basePath = url.pathname.replace(/\/+$/, '').replace(/\/chat\/completions$/, '');
+  if (apiConfig.apiPreset === 'exaone' && (!isExaone(apiConfig) || basePath !== '/v1')) {
+    throw new APIError('EXAONE 주소와 모델이 공식 프리셋과 일치해야 합니다.', 422);
+  }
+  if (isExaone(apiConfig) && !apiConfig.apiKey) {
+    throw new APIError('설정에서 EXAONE API 키를 입력해 주세요.', 422);
+  }
+  url.pathname = basePath + '/chat/completions';
+  return url.href;
+}
+
+function retryDelay(header, now = Date.now()) {
+  if (!header) return null;
+  const ms = /^\d+$/.test(header) ? Number(header) * 1000 : Date.parse(header) - now;
+  return Number.isFinite(ms) ? Math.max(0, ms) : null;
+}
+
+function waitForRetry(ms, signal) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => signal?.removeEventListener('abort', abort);
+    const timer = setTimeout(() => { cleanup(); resolve(); }, ms);
+    function abort() {
+      clearTimeout(timer);
+      cleanup();
+      reject(new APIError('요청을 취소했습니다.', 499));
+    }
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
+  });
 }
 
 /** 오류 본문은 최대 16 KiB만 읽고, 원문은 APIError에 보관하지 않는다. */
@@ -129,7 +179,7 @@ class LLMClient {
     if (!this.apiBase) throw new APIError('API 주소가 설정되지 않았어요! 설정에서 입력해주세요.', 0);
     if (!this.model)   throw new APIError('모델명이 설정되지 않았어요! 설정에서 입력해주세요.', 0);
 
-    const url = `${this.apiBase}/chat/completions`;
+    const url = chatCompletionURL(this);
 
     const body = buildChatCompletionRequest(this, messages, options, false);
 
@@ -153,6 +203,8 @@ class LLMClient {
 
       const response = await fetch(url, {
         method: 'POST',
+        redirect: 'error',
+        credentials: 'omit',
         headers: headers,
         body: JSON.stringify(body),
         signal: controller.signal
@@ -163,11 +215,9 @@ class LLMClient {
 
       if (!response.ok) {
         const errorText = await readAPIErrorBody(response);
-        throw new APIError(
-          `HTTP ${response.status}`,
-          response.status,
-          errorText
-        );
+        const error = new APIError(`HTTP ${response.status}`, response.status, errorText);
+        error.retryAfterMs = retryDelay(response.headers.get('Retry-After'));
+        throw error;
       }
 
       // 본문 읽기에도 위에서 시작한 제한 적용 (P0-5)
@@ -195,12 +245,13 @@ class LLMClient {
 
       return {
         content,
-        raw: data,
+        raw: isExaone(this) ? null : data,
         finishReason,
         truncated: finishReason === 'length'
       };
 
     } catch (err) {
+      if (options.signal?.aborted) throw new APIError('요청을 취소했습니다.', 499);
       if (err.name === 'AbortError') {
         throw new APIError('요청 시간이 초과되었어요... 잠시 후 다시 해볼까요?', 408);
       }
@@ -221,10 +272,20 @@ class LLMClient {
    * @returns {Promise<{content: string, raw: object|null, finishReason: string, truncated: boolean}>}
    */
   async chatStream(messages, options = {}, onDelta) {
+    try { return await this.readChatStream(messages, options, onDelta); }
+    catch (error) {
+      if (!isExaone(this) || options.retries === 0 || error.partialContent || !error.retryableResponse
+        || error.retryAfterMs > 5000) throw error;
+      await waitForRetry(Math.max(error.retryAfterMs || 0, this.retryBackoffMs), options.signal);
+      return this.readChatStream(messages, options, onDelta);
+    }
+  }
+
+  async readChatStream(messages, options, onDelta) {
     if (!this.apiBase) throw new APIError('API 주소가 설정되지 않았어요! 설정에서 입력해주세요.', 0);
     if (!this.model)   throw new APIError('모델명이 설정되지 않았어요! 설정에서 입력해주세요.', 0);
 
-    const url = `${this.apiBase}/chat/completions`;
+    const url = chatCompletionURL(this);
     const body = buildChatCompletionRequest(this, messages, options, true);
 
     const headers = { 'Content-Type': 'application/json' };
@@ -248,10 +309,14 @@ class LLMClient {
     }
 
     let finishReason = '';
+    let full = '';
+    let finished = false;
 
     try {
       const response = await fetch(url, {
         method: 'POST',
+        redirect: 'error',
+        credentials: 'omit',
         headers,
         body: JSON.stringify(body),
         signal: controller.signal
@@ -259,11 +324,10 @@ class LLMClient {
 
       if (!response.ok) {
         const errorText = await readAPIErrorBody(response);
-        throw new APIError(
-          `HTTP ${response.status}`,
-          response.status,
-          errorText
-        );
+        const error = new APIError(`HTTP ${response.status}`, response.status, errorText);
+        error.retryAfterMs = retryDelay(response.headers.get('Retry-After'));
+        error.retryableResponse = response.status === 429 || response.status >= 500;
+        throw error;
       }
       if (!response.body || /application\/json/i.test(response.headers?.get('content-type') || '')) {
         const err = new APIError('이 API는 스트리밍을 지원하지 않아요.', 0);
@@ -275,7 +339,22 @@ class LLMClient {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
-      let full = '';
+      const consume = line => {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) return;
+        const data = trimmed.slice(5).trim();
+        if (data === '[DONE]') { finished = true; return; }
+        let json;
+        try { json = JSON.parse(data); } catch { return; }
+        if (json.error) throw new APIError('스트리밍 중 모델 오류가 발생했습니다.', 502);
+        const choice = json.choices?.[0];
+        const piece = choice?.delta?.content || choice?.message?.content;
+        if (choice?.finish_reason) finishReason = choice.finish_reason;
+        if (typeof piece === 'string' && piece) {
+          full += piece;
+          onDelta?.(full, piece);
+        }
+      };
       bumpTimeout();
 
       while (true) {
@@ -286,27 +365,11 @@ class LLMClient {
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed.startsWith(':')) continue;
-          if (!trimmed.startsWith('data:')) continue;
-          const data = trimmed.slice(5).trim();
-          if (data === '[DONE]') continue;
-          try {
-            const json = JSON.parse(data);
-            const piece = json.choices?.[0]?.delta?.content
-              || json.choices?.[0]?.message?.content
-              || '';
-            if (json.choices?.[0]?.finish_reason) {
-              finishReason = json.choices[0].finish_reason;
-            }
-            if (piece) {
-              full += piece;
-              if (typeof onDelta === 'function') onDelta(full, piece);
-            }
-          } catch (_) { /* 불완전한 SSE 조각은 무시 */ }
-        }
+        for (const line of lines) consume(line);
+        if (finished) { await reader.cancel(); break; }
       }
+      consume(buffer + decoder.decode());
+      if (!finished && !finishReason) throw new APIError('완료 신호 없이 스트리밍이 끊겼습니다.', 502);
 
       if (!full.trim()) throw new APIError('모델이 빈 응답을 반환했어요. 생성 예산과 추론 설정을 확인해주세요.', 422);
       return {
@@ -316,12 +379,18 @@ class LLMClient {
         truncated: finishReason === 'length'
       };
     } catch (err) {
+      if (options.signal?.aborted) throw new APIError('요청을 취소했습니다.', 499);
       if (err.name === 'AbortError') {
         throw new APIError('요청 시간이 초과되었어요... 잠시 후 다시 해볼까요?', 408);
       }
+      if (full.trim()) {
+        const error = new APIError('스트리밍이 중단됐습니다. 화면의 답변은 일부입니다.', 502);
+        error.partialContent = full.trim();
+        throw error;
+      }
       if (err instanceof APIError) throw err;
       const error = new APIError('네트워크 연결 오류', 0);
-      error.streamTransportFailure = true;
+      error.streamTransportFailure = !isExaone(this);
       throw error;
     } finally {
       clearTimeout(timeoutId);
@@ -335,7 +404,9 @@ class LLMClient {
    * 공유 클라이언트 속성을 임시 변경하지 않음).
    */
   async chatWithRetry(messages, options = {}) {
-    const retries = Number.isInteger(options.retries) ? options.retries : this.maxRetries;
+    const configuredRetries = Number.isInteger(options.retries) ? options.retries : this.maxRetries;
+    const exaone = isExaone(this);
+    const retries = exaone ? Math.min(1, configuredRetries) : configuredRetries;
     let lastError;
 
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -346,14 +417,15 @@ class LLMClient {
         console.warn(`[LLMClient] 시도 ${attempt + 1}/${retries + 1} 실패 (HTTP ${err.statusCode || 0})`);
 
         // 4xx 에러는 재시도하지 않음 (인증 오류 등)
-        if (err.statusCode >= 400 && err.statusCode < 500) {
+        if (err.statusCode >= 400 && err.statusCode < 500 && !(exaone && err.statusCode === 429)) {
           throw err;
         }
 
         // 마지막 시도가 아니면 대기 후 재시도
         if (attempt < retries) {
-          const delay = this.retryBackoffMs * Math.pow(2, attempt);
-          await sleep(delay);
+          if (err.retryAfterMs > 5000) throw err;
+          const delay = Math.max(err.retryAfterMs || 0, this.retryBackoffMs * 2 ** attempt);
+          await waitForRetry(delay, options.signal);
         }
       }
     }
@@ -392,7 +464,7 @@ class LLMClient {
       { role: 'user', content: prompt }
     ];
 
-    const result = await this.chatWithRetry(messages, { maxTokens: 220, reasoningEffort: 'none' });
+    const result = await this.chatWithRetry(messages, { maxTokens: isExaone(this) ? 1200 : 220, reasoningEffort: 'none' });
     return parseMoodFromResponse(result.content);
   }
 }
@@ -435,7 +507,10 @@ class APIError extends Error {
       if (this.details.kind === 'context') return '모델의 컨텍스트 상한을 초과했어요. 입력 길이와 생성 예산을 줄여주세요.';
       return 'API 요청 형식이나 설정이 올바르지 않아요.' + (this.details.param ? ' 확인할 옵션: ' + this.details.param : '');
     }
-    if (this.statusCode === 422) return this.message;
+    if (this.partialContent || this.statusCode === 422 || this.statusCode === 499) return this.message;
+    if (this.statusCode === 429 && this.retryAfterMs != null) {
+      return `서비스가 혼잡하거나 요청 한도에 도달했습니다. 약 ${Math.ceil(this.retryAfterMs / 1000)}초 후 다시 시도해 주세요.`;
+    }
     switch (this.statusCode) {
       case 401:
         return 'API 키가 올바르지 않아요... 설정에서 확인해주시겠어요? (´•ω•̥`)';
@@ -444,7 +519,7 @@ class APIError extends Error {
       case 404:
         return 'API 주소를 찾을 수 없어요... URL이 올바른지 확인해볼까요?';
       case 429:
-        return '앗, 너무 많은 요청을 보냈나 봐요! 조금만 기다려주세요~ (╹◡╹)';
+        return '서비스가 혼잡하거나 요청 한도에 도달했습니다. 잠시 후 다시 시도해 주세요.';
       case 500:
       case 502:
       case 503:
