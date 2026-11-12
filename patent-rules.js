@@ -156,6 +156,8 @@ const PatentRules = (() => {
         && evidence.some(document => document.id === ref.document
           && document.pages.some(page => page.page === ref.page && compact(page.text).includes(compact(ref.quote)))));
       if (item.level !== '확인 불가' && (!refs.length || !refs.some(ref => ref.document === target))) continue;
+      if (item.level !== '확인 불가' && ['RD-01', 'RD-02', 'RD-03', 'RD-05'].includes(rule)
+        && !refs.some(ref => ref.document !== target)) continue;
       rows.push({ rule, target, level: item.level, code: null, evidence: refs,
         comparison: item.comparison, analysis: item.analysis, verdict: item.verdict });
     }

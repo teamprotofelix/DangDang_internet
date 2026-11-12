@@ -38,7 +38,7 @@ const PatentStore = (() => {
         transaction.oncomplete = resolve;
         transaction.onabort = () => reject(transaction.error);
       });
-    }
+    },
     async remove(app) {
       const db = await open();
       await new Promise((resolve, reject) => {
