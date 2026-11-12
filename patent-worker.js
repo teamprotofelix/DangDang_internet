@@ -49,7 +49,7 @@ const PatentWorker = (() => {
     return Kipris.isGazette(doc.kind) && doc.hasFile && doc.status === 'verified' && doc.identityVerified && doc.gazetteNumber;
   }
 
-  async function saveReconciledGazettes(record, docs, report, inspected) {
+  async function saveReconciledGazettes(record, docs, report, inspected, bytes) {
     const key = doc => doc.kind + ':' + doc.gazetteNumber;
     const kept = new Map();
     for (const doc of docs) {
@@ -70,7 +70,8 @@ const PatentWorker = (() => {
         ? { ...doc, gazetteLocator: inspected.gazetteLocator }
         : doc);
     const checkpoint = { ...record, report: removeIds.size ? null : report, docs: reconciled };
-    if (removeIds.size) await PatentStore.saveWithFile(checkpoint, null, null, [...removeIds]);
+    const writeId = bytes && !removeIds.has(inspected.id) ? inspected.id : null;
+    if (writeId || removeIds.size) await PatentStore.saveWithFile(checkpoint, writeId, bytes, [...removeIds]);
     else await PatentStore.save(checkpoint);
     record.docs = reconciled;
     record.report = checkpoint.report;
@@ -91,6 +92,15 @@ const PatentWorker = (() => {
 
   async function savePdf(record, doc, bytes, source) {
     Kipris.checkPdfBytes(bytes);
+    if (Kipris.isGazette(doc.kind) && record.docs.some(item => item !== doc && item.kind === doc.kind && verifiedGazette(item))) {
+      // When a known gazette already exists, identify the candidate before writing a second copy.
+      const inspection = await Kipris.inspectPdf(bytes, record.application, doc, extract);
+      const updated = { ...doc, ...inspection, source, hasFile: true };
+      const docs = record.docs.map(item => item === doc ? updated : item);
+      await saveReconciledGazettes(record, docs, null, updated, bytes);
+      Object.assign(doc, updated);
+      return;
+    }
     const saved = { ...doc, source, hasFile: true, status: 'pdf_extract_pending',
       size: bytes.length, pageCount: null, pages: [], identityVerified: false };
     const checkpoint = { ...record, report: null, docs: record.docs.map(item => item === doc ? saved : item) };
