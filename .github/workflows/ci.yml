@@ -1,0 +1,55 @@
+
+name: DangDang CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check JavaScript syntax
+        run: |
+          for file in ./*.js; do
+            node --check "$file"
+          done
+
+      - name: Validate Chrome manifest
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const manifest = JSON.parse(
+            fs.readFileSync('manifest.json', 'utf8')
+          );
+
+          if (manifest.manifest_version !== 3) {
+            throw new Error('Chrome Manifest V3 required');
+          }
+
+          const required = [
+            manifest.background.service_worker,
+            manifest.side_panel.default_path,
+            ...manifest.content_scripts.flatMap(
+              x => [...x.js, ...(x.css || [])]
+            ),
+            ...Object.values(manifest.icons)
+          ];
+
+          for (const file of required) {
+            if (!fs.existsSync(file)) {
+              throw new Error(`Missing file: ${file}`);
+            }
+          }
+
+          console.log('Manifest validation passed');
+          NODE
