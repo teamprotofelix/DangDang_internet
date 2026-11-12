@@ -233,7 +233,8 @@ test('중간서류 XML에서 발송번호와 모든 PDF 경로를 읽고 취소 
   const { Kipris } = testRuntime(async url => {
     calls++;
     assert.match(url, /IntermediateDocumentOPService\/pdfInfoV2/);
-    return new Response(xml([1, 2].map(i => '<pdfInfoV2><sendNumber>' + i
+    const requested = new URL(url).searchParams.get('sendNumber');
+    return new Response(xml((requested ? [requested] : [1, 2]).map(i => '<pdfInfoV2><sendNumber>' + i
       + '</sendNumber><filePath>https://plus.kipris.or.kr/' + i + '.pdf?x=1&amp;y=2</filePath></pdfInfoV2>').join('')));
   });
   const signal = new AbortController();
@@ -241,9 +242,10 @@ test('중간서류 XML에서 발송번호와 모든 PDF 경로를 읽고 취소 
   assert.equal(paths.length, 2);
   assert.equal(paths[1].id, '2');
   assert.match(paths[1].path, /x=1&y=2/);
+  assert.deepEqual(plain(await Kipris.pdfLocations('OA', app, 'fixture-kipris', signal.signal, '2')), [plain(paths[1])]);
   signal.abort();
   await assert.rejects(Kipris.download(paths[1].path, signal.signal), { name: 'AbortError' });
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
 });
 
 test('PDF 바이트·페이지·문서 식별자와 스캔 상태를 구분', async () => {
@@ -255,8 +257,27 @@ test('PDF 바이트·페이지·문서 식별자와 스캔 상태를 구분', as
   assert.equal((await Kipris.inspectPdf(bytes, app, doc, extract(page))).status, 'verified');
   assert.equal((await Kipris.inspectPdf(bytes, app, doc, extract('다른 출원번호'))).status, 'identity');
   assert.equal((await Kipris.inspectPdf(bytes, app, doc, extract(''))).status, 'pdf_text');
-  await assert.rejects(Kipris.inspectPdf(new TextEncoder().encode('<html>error</html>'), app, doc, extract(page)), { code: 'pdf' });
-  await assert.rejects(Kipris.inspectPdf(bytes, app, doc, async () => null), { code: 'pdf' });
+  await assert.rejects(Kipris.inspectPdf(new TextEncoder().encode('<html>error</html>'), app, doc, extract(page)), { code: 'pdf_format' });
+  await assert.rejects(Kipris.inspectPdf(bytes.subarray(0, -5), app, doc, extract(page)), { code: 'pdf_incomplete' });
+  await assert.rejects(Kipris.inspectPdf(new Uint8Array(), app, doc, extract(page)), { code: 'pdf_empty' });
+  await assert.rejects(Kipris.inspectPdf(new Uint8Array(Kipris.maxPdf + 1), app, doc, extract(page)), { code: 'pdf_size' });
+  assert.equal((await Kipris.inspectPdf(bytes, app, doc, async () => null)).status, 'pdf_parse');
+  const unavailable = await Kipris.inspectPdf(bytes, app, doc, async () => { throw new Kipris.Error('pdf_parser'); });
+  assert.equal(unavailable.status, 'pdf_parser');
+  assert.equal(unavailable.size, bytes.length);
+  assert.equal(unavailable.identityVerified, false);
+  assert.equal(unavailable.pages.length, 0);
+});
+
+test('행정처리 분류 접두사가 있는 최초 출원서를 당시 청구항의 시작점으로 인식', () => {
+  const { Kipris, PatentRules } = testRuntime();
+  const event = { serial: '1', id: '112099000000001', date: '20990101', title: '[특허출원]특허출원서' };
+  assert.equal(Kipris.documentType(event.title), 'APP');
+  const version = PatentRules.restoreClaims({ events: [event],
+    changes: [{ ...event, claim: '1', change: '신규', text: '센서를 포함하는 장치.' }] },
+  [{ ...event, kind: 'APP' }], { date: '20990102' });
+  assert.equal(version.status, 'reconstructed');
+  assert.equal(version.claims[0].text, '센서를 포함하는 장치.');
 });
 
 test('청구항은 최초 기록과 통지 이전 보정만 반영하고 당일 보정은 보류', () => {
@@ -398,7 +419,8 @@ test('검증된 특허 원문이 없으면 출원번호만 모델에 전송하�
     historyStatus: 'permission', docs: [{ id: 'oa', kind: 'OA', title: '통지서', status: 'permission' }] },
   exa, new AbortController().signal, async () => {});
   assert.equal(calls, 0);
-  assert.equal(report.status, 'partial');
+  assert.equal(report.status, 'no_evidence');
+  assert.match(PatentDiagnosis.format(report), /외부 모델에 원문을 전송하지 않았습니다/);
   assert.equal(report.findings.length, 14);
 });
 

@@ -36,6 +36,9 @@ async function extractPdf(encoded) {
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (message?.type !== 'kipris_pdf_parse' || sender.id !== chrome.runtime.id || sender.tab
     || sender.url !== chrome.runtime.getURL('background.js')) return false;
-  extractPdf(message.encoded).then(reply, () => reply(null));
+  extractPdf(message.encoded).then(
+    result => reply({ result }),
+    error => reply({ error: error?.name === 'PasswordException' ? 'pdf_password' : 'pdf_parse' })
+  );
   return true;
 });

@@ -27,7 +27,13 @@ async function main() {
     page.on('dialog', dialog => dialog.dismiss());
     await worker.evaluate(({ app, send, date, pdf }) => {
       const fetchOriginal = globalThis.fetch;
-      globalThis.fixtureRequests = { kipris: 0, model: 0 };
+      globalThis.fixtureRequests = { kipris: 0, model: 0, pdf: 0 };
+      const createOffscreen = chrome.offscreen.createDocument.bind(chrome.offscreen);
+      globalThis.fixtureParserUnavailable = true;
+      chrome.offscreen.createDocument = options => {
+        if (globalThis.fixtureParserUnavailable) return Promise.reject(new Error('Fixture: parser unavailable'));
+        return createOffscreen(options);
+      };
       globalThis.fetch = async (input, options) => {
         const url = new URL(typeof input === 'string' ? input : input.url);
         if (url.protocol === 'chrome-extension:') return fetchOriginal(input, options);
@@ -38,10 +44,15 @@ async function main() {
           if (url.pathname.includes('relatedDocsonfileInfo')) return response('<items><item><applicationNumber>'
             + app + '</applicationNumber><documentNumber>' + send + '</documentNumber><documentDate>'
             + date + '</documentDate><documentTitle>의견제출통지서</documentTitle></item></items>');
-          if (url.pathname.includes('IntermediateDocumentOPService')) return response('<pdfInfoV2><applicationNumber>'
+          if (url.pathname.includes('IntermediateDocumentOPService') && !url.searchParams.get('sendNumber')) return response('<items/>');
+          if (url.pathname.includes('IntermediateDocumentOPService') && url.searchParams.get('sendNumber') === send) return response('<pdfInfoV2><applicationNumber>'
             + app + '</applicationNumber><sendNumber>' + send
             + '</sendNumber><filePath>https://plus.kipris.or.kr/fixture.pdf</filePath></pdfInfoV2>');
-          if (url.pathname === '/fixture.pdf') return new Response(pdf, { headers: { 'content-type': 'application/pdf' } });
+          if (url.pathname === '/fixture.pdf') {
+            globalThis.fixtureRequests.pdf++;
+            if (globalThis.fixtureRequests.pdf === 1) return new Response(null, { status: 410 });
+            return new Response(pdf, { headers: { 'content-type': 'application/pdf' } });
+          }
           return response('<items/>');
         }
         if (url.hostname === 'api.exaone.ai') {
@@ -139,11 +150,24 @@ async function main() {
     await page.click('#btn-mode-work');
     await page.fill('#patent-application', '10-9999-0000001');
     await page.click('#patent-lookup');
+    const notice = page.getByRole('row').filter({ hasText: '의견제출통지서' });
+    await notice.getByText('PDF 다운로드 경로가 만료됐거나 서버에서 찾을 수 없음').waitFor();
+    await notice.getByRole('button', { name: '원문 다시 조회', exact: true }).click();
+    await page.getByText('PDF 확보 · 텍스트 추출기를 실행할 수 없음', { exact: false }).waitFor();
+    await page.waitForFunction(() => !document.querySelector('#patent-start').disabled);
+    const unverified = page.waitForEvent('download');
+    await page.getByRole('button', { name: '미검증 PDF 다운로드', exact: true }).click();
+    const original = await unverified;
+    assert.equal((await readFile(await original.path())).toString('utf8'), testPdf());
+    await worker.evaluate(() => { globalThis.fixtureParserUnavailable = false; });
+    await page.getByRole('button', { name: '텍스트 추출 재시도', exact: true }).click();
     await page.waitForFunction(() => document.querySelector('#patent-docs').textContent.includes('원문과 문서 식별 확인'));
     await page.waitForFunction(() => !document.querySelector('#patent-start').disabled);
-    assert.equal((await worker.evaluate(() => globalThis.fixtureRequests)).model, 0);
+    const lookup = await worker.evaluate(() => globalThis.fixtureRequests);
+    assert.equal(lookup.model, 0);
+    assert.equal(lookup.pdf, 2);
     const source = page.waitForEvent('download');
-    await page.getByRole('button', { name: '저장', exact: true }).click();
+    await page.getByRole('button', { name: 'PDF 다운로드', exact: true }).click();
     assert.match((await source).suggestedFilename(), /959999000000001\.pdf$/);
     const denied = await worker.evaluate(() => handleMessage({ type: 'kipris_key_state' },
       { id: chrome.runtime.id, url: 'https://fixture.invalid/', tab: { id: 1 } }));
