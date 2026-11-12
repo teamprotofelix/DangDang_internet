@@ -38,8 +38,20 @@ jobs:
       - name: Test functionality with synthetic fixtures
         run: npm test
 
+      - name: Build installable extension with PDF.js
+        run: npm run package:extension
+
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
 
       - name: Load unpacked extension and exercise core workflows
         run: npm run test:browser
+        env:
+          DANGDANG_EXTENSION_DIR: dist/DangDang_internet
+
+      - name: Upload installable extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: DangDang_internet_Chrome
+          path: dist/DangDang_internet/
+          if-no-files-found: error

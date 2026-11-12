@@ -5,6 +5,12 @@ const PatentWorker = (() => {
   let offscreenOpening;
 
   async function extract(bytes) {
+    let binary = '';
+    for (let offset = 0; offset < bytes.length; offset += 8192) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
+    }
+    const encoded = btoa(binary);
+    const ask = type => chrome.runtime.sendMessage({ type, encoded });
     let reply;
     try {
       const url = chrome.runtime.getURL('kipris-offscreen.html');
@@ -15,13 +21,10 @@ const PatentWorker = (() => {
         }).finally(() => { offscreenOpening = null; });
         await offscreenOpening;
       }
-      let binary = '';
-      for (let offset = 0; offset < bytes.length; offset += 8192) {
-        binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
-      }
-      reply = await chrome.runtime.sendMessage({ type: 'kipris_pdf_parse', encoded: btoa(binary) });
-    } catch {
-      throw new Kipris.Error('pdf_parser');
+      reply = await ask('kipris_pdf_parse');
+    } catch { /* An open extension panel can use the same local parser. */ }
+    if (!reply || reply.error === 'pdf_engine_load') {
+      try { reply = await ask('kipris_pdf_parse_panel') || reply; } catch { /* Preserve the original error. */ }
     }
     if (!reply) throw new Kipris.Error('pdf_parser');
     if (reply.error) throw new Kipris.Error(reply.error);

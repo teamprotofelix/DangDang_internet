@@ -27,7 +27,9 @@ const Kipris = (() => {
     pdf_size: 'PDF가 다운로드 상한 20 MB를 초과함',
     pdf_format: '서버 응답에 PDF 파일 서명이 없음',
     pdf_incomplete: 'PDF 끝 표시가 없어 파일이 불완전함',
-    pdf_parser: 'PDF 확보 · 텍스트 추출기를 실행할 수 없음',
+    pdf_parser: 'PDF 확보 · 추출 페이지에 연결할 수 없음. 확장 프로그램을 다시 로드하고 패널에서 재시도해 주세요.',
+    pdf_assets_missing: 'PDF 확보 · 설치 폴더에 PDF.js가 없음. 설치용 패키지를 사용하거나 npm ci 후 다시 로드해 주세요.',
+    pdf_engine_load: 'PDF 확보 · PDF.js 초기화 실패. 확장 프로그램을 다시 로드해 주세요.',
     pdf_extract_pending: 'PDF 확보 · 텍스트 검증 대기',
     pdf_parse: 'PDF 확보 · 페이지를 읽지 못함',
     pdf_password: 'PDF 확보 · 암호로 보호되어 자동 추출할 수 없음',
@@ -46,7 +48,7 @@ const Kipris = (() => {
     other: '이력 정보만 표시'
   };
   const apiPdfKinds = ['OA', 'RD', 'RG', 'PUB', 'REG'];
-  const canRetryExtraction = status => ['pdf_extract_pending', 'pdf_parser', 'pdf_parse'].includes(status);
+  const canRetryExtraction = status => ['pdf_extract_pending', 'pdf_parser', 'pdf_parse', 'pdf_assets_missing', 'pdf_engine_load'].includes(status);
   const isGazette = kind => kind === 'PUB' || kind === 'REG';
 
   class Error extends globalThis.Error {
@@ -396,7 +398,7 @@ const Kipris = (() => {
     let failure = 'pdf_parse';
     try { parsed = await extract(bytes); }
     catch (error) {
-      if (error instanceof Error && ['pdf_parser', 'pdf_parse', 'pdf_password'].includes(error.code)) failure = error.code;
+      if (error instanceof Error && ['pdf_parser', 'pdf_parse', 'pdf_password', 'pdf_assets_missing', 'pdf_engine_load'].includes(error.code)) failure = error.code;
     }
     if (!parsed?.pageCount) return {
       status: failure, size: bytes.length, pageCount: null, pages: [], identityVerified: false

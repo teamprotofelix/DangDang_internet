@@ -110,8 +110,8 @@
         <label class="setting-label">📏 기본 응답 길이 (max_tokens, 요청 기본값)</label>
         <div class="token-slider-row">
           <input type="range" id="input-max-tokens" class="token-slider"
-                 min="256" max="55000" step="256" value="25000" />
-          <span id="max-tokens-value" class="token-value">25,000</span>
+                 min="256" max="55000" step="1" value="30000" />
+          <span id="max-tokens-value" class="token-value">30,000</span>
         </div>
         <p class="preset-desc">요청 기본값일 뿐, 실제 요청은 모델 한도와 입력 크기에 맞게 자동 조정돼요.</p>
       </div>
@@ -406,6 +406,7 @@
   <script src="patent-diagnosis.js"></script>
   <script src="coding-panel.js"></script>
   <script src="patent-panel.js"></script>
+  <script type="module" src="kipris-pdf-panel.mjs"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

@@ -59,7 +59,7 @@ const CONFIG = {
   // --- API 요청 설정 ---
   api: {
     temperature: 0.85,
-    maxTokens: 25000,
+    maxTokens: 30000,
     timeoutMs: 90000,
     retries: 2,
     retryBackoffMs: 1000
@@ -155,7 +155,7 @@ const DEFAULT_API_SETTINGS = {
   apiPreset: 'deepseek',
   apiBase: 'https://api.deepseek.com',
   model: 'deepseek-v4-flash',
-  maxTokens: 25000,              // 사용자 요청 기본값(의미 유지). 실제 요청은 예산에 맞게 조정됨
+  maxTokens: 30000,              // 사용자 요청 기본값(의미 유지). 실제 요청은 예산에 맞게 조정됨
   pageContentMaxChars: 5000,     // 웹페이지 읽기 최대 글자 수 (설정에서 500~20000 조절)
   modelContextTokens: 32768,     // 모델 컨텍스트 상한 (모르는 모델의 보수적 기본값, 설정에서 조절)
   modelMaxOutputTokens: 8192     // 모델 최대 출력 상한 (보수적 기본값, 설정에서 조절)

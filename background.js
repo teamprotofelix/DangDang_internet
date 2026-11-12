@@ -715,7 +715,7 @@ async function processUserMessage(userText, opts = {}) {
 // ============================================================
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message?.type === 'kipris_pdf_parse') return false;
+  if (['kipris_pdf_parse', 'kipris_pdf_parse_panel'].includes(message?.type)) return false;
   handleMessage(message, sender).then(sendResponse).catch(err => {
     sendResponse({ type: MSG_ERROR, data: { message: err.message } });
   });

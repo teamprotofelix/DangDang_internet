@@ -20,3 +20,6 @@ work/
 
 # Generated local PDF.js assets
 vendor/pdfjs/
+
+# Prepared extension distribution
+dist/

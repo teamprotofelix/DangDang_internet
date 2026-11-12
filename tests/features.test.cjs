@@ -297,6 +297,9 @@ test('PDF 바이트·페이지·문서 식별자와 스캔 상태를 구분', as
   assert.equal(unavailable.size, bytes.length);
   assert.equal(unavailable.identityVerified, false);
   assert.equal(unavailable.pages.length, 0);
+  const missing = await Kipris.inspectPdf(bytes, app, doc, async () => { throw new Kipris.Error('pdf_assets_missing'); });
+  assert.equal(missing.status, 'pdf_assets_missing');
+  assert.equal(Kipris.canRetryExtraction(missing.status), true);
 });
 
 test('행정처리 분류 접두사가 있는 최초 출원서를 당시 청구항의 시작점으로 인식', () => {
@@ -442,6 +445,77 @@ test('부분 진단은 빠진 선행 통지와 잘못된 모델 인용을 확정
   assert.equal(PatentRules.readFindings(JSON.stringify([candidate]), [['RD-04']], [target], 'rd')[0].code, null);
 });
 
+test('최후통지 규칙은 선행 통지와 보정 전후 청구항 판본을 함께 요구', () => {
+  const { PatentDiagnosis, PatentRules } = testRuntime();
+  const verified = { status: 'verified', identityVerified: true,
+    pages: [{ page: 1, text: '특허법 제42조 제4항에 따른 거절이유' }] };
+  const earlier = { ...verified, id: 'earlier', kind: 'OA', title: '의견제출통지서', date: '20990102' };
+  const final = { ...verified, id: 'final', kind: 'OA', title: '최후의견제출통지서', date: '20990104' };
+  const filing = { serial: '1', id: 'app', title: '특허출원서', date: '20990101', kind: 'APP' };
+  const amendment = { serial: '2', id: 'am', title: '보정서', date: '20990103', kind: 'AM' };
+  const record = { docs: [filing, earlier, amendment, final], historyStatus: 'complete', claimStatus: 'complete',
+    claimHistory: { events: [filing, amendment], changes: [
+      { ...filing, claim: '1', change: '신규', text: '센서를 갖는 장치' },
+      { ...amendment, claim: '1', change: '수정', text: '온도 센서를 갖는 장치' }
+    ] } };
+  const { tasks } = PatentDiagnosis.prepare(record);
+  const task = tasks.find(item => item.target.id === final.id);
+  assert.ok(task.rules.some(([id]) => id === 'OA-15'));
+  assert.ok(task.rules.some(([id]) => id === 'OA-16'));
+  assert.ok(task.rules.some(([id]) => id === 'OA-17'));
+  assert.ok(PatentRules.groups.RC.some(([id]) => id === '07'));
+  assert.equal(task.priorVersions[0].version.claims[0].text, '센서를 갖는 장치');
+  assert.equal(task.version.claims[0].text, '온도 센서를 갖는 장치');
+  const incomplete = PatentDiagnosis.prepare({ ...record, historyStatus: 'pagination' });
+  assert.ok(incomplete.findings.some(row => row.rule === 'OA-15' && row.level === '확인 불가'));
+});
+
+test('긴 문서 대조는 여러 원문의 쪽별 발췌를 사용하고 발견 없음 판정은 보류', async () => {
+  const quote = '청구항 제1항의 문언';
+  const pages = [1, 2].map(page => ({ page, text: quote + ' 추가 문장'.repeat(7000) }));
+  const notice = { id: 'oa', kind: 'OA', title: '의견제출통지서', date: '20990101',
+    status: 'verified', identityVerified: true, pages };
+  const decision = { ...notice, id: 'rd', kind: 'RD', title: '거절결정서', date: '20990102' };
+  let cross = false;
+  const { PatentDiagnosis } = testRuntime(async (_, options) => {
+    const body = JSON.parse(options.body);
+    const input = JSON.parse(body.messages[1].content);
+    if (input.rules.some(([rule]) => rule === 'RD-01')) {
+      cross = body.messages[0].content.includes('쪽별 원문 발췌')
+        && input.documents.length === 2 && input.documents.every(doc =>
+          doc.pages.some(page => page.page === 2) && doc.pages.every(page => page.text.length < pages[0].text.length));
+    }
+    assert.equal(body.max_tokens, 512);
+    const evidence = input.documents.map(doc => ({ document: doc.id, page: 1, quote }));
+    const rows = input.rules.map(([rule]) => ({ rule, evidence, comparison: '비교', analysis: '분석', verdict: '판정',
+      level: rule === 'RD-02' ? '조건부 점검' : '검토한 규칙에서 발견되지 않음' }));
+    return Response.json({ choices: [{ message: { content: JSON.stringify(rows) }, finish_reason: 'stop' }] });
+  });
+  const record = { application: app, collectionStatus: 'complete', historyStatus: 'complete', docs: [notice, decision] };
+  const report = await PatentDiagnosis.evaluate(record, { ...exa, modelContextTokens: 4096, modelMaxOutputTokens: 512 },
+    new AbortController().signal, async () => {});
+  assert.equal(cross, true);
+  assert.deepEqual(plain(report.tokenBudget), { requested: 30000, outputPerCall: 512 });
+  assert.equal(report.findings.find(row => row.rule === 'RD-01').level, '확인 불가');
+  assert.equal(report.findings.find(row => row.rule === 'RD-02').level, '조건부 점검');
+  assert.ok(report.omitted.some(row => row.document === notice.id && row.pages.includes(2)));
+  assert.equal(report.status, 'partial');
+});
+
+test('출력과 입력 여유를 허용하는 설정에서는 진단 호출에 30000을 적용', async () => {
+  let requested;
+  const { PatentDiagnosis } = testRuntime(async (_, options) => {
+    requested = JSON.parse(options.body).max_tokens;
+    return Response.json({ choices: [{ message: { content: '[]' }, finish_reason: 'stop' }] });
+  });
+  const report = await PatentDiagnosis.evaluate({ application: app, collectionStatus: 'complete',
+    historyStatus: 'complete', docs: [{ id: 'rd', kind: 'RD', title: '거절결정서', date: '20990102',
+      status: 'verified', identityVerified: true, pages: [{ page: 1, text: '합성 문서 본문' }] }] },
+  { ...exa, modelContextTokens: 65536, modelMaxOutputTokens: 30000 }, new AbortController().signal, async () => {});
+  assert.equal(requested, 30000);
+  assert.equal(report.tokenBudget.outputPerCall, 30000);
+});
+
 test('검증된 특허 원문이 없으면 출원번호만 모델에 전송하지 않음', async () => {
   let calls = 0;
   const { PatentDiagnosis } = testRuntime(async () => { calls++; });
@@ -451,7 +525,7 @@ test('검증된 특허 원문이 없으면 출원번호만 모델에 전송하�
   assert.equal(calls, 0);
   assert.equal(report.status, 'no_evidence');
   assert.match(PatentDiagnosis.format(report), /외부 모델에 원문을 전송하지 않았습니다/);
-  assert.equal(report.findings.length, 14);
+  assert.equal(report.findings.length, 16);
 });
 
 test('새 설치에서 웹 콘텐츠와 기억 전송이 기본 해제', () => {
@@ -460,6 +534,7 @@ test('새 설치에서 웹 콘텐츠와 기억 전송이 기본 해제', () => {
   assert.equal(settings.contentAwarenessEnabled, false);
   assert.equal(settings.sendMemoryToModel, false);
   assert.equal(settings.floatingAvatarEnabled, false);
+  assert.equal(vm.runInContext('DEFAULT_API_SETTINGS.maxTokens', context), 30000);
 });
 
 test('실제 PDF 파서가 합성 한국어 원문과 페이지 경계를 읽음', async () => {
