@@ -6,6 +6,10 @@ const { chromium } = process.env.DANGDANG_PLAYWRIGHT
   ? require(process.env.DANGDANG_PLAYWRIGHT) : require('playwright');
 
 const { app, send, date, testPdf } = require('./pdf-fixture.cjs');
+const pubNumbers = ['1099990000011', '1099990000012'];
+const pubPdfs = pubNumbers.map(number => testPdf(['공개특허공보', '출원번호 ' + app, '공개번호 ' + number]));
+const opinionId = '119999000000001';
+const opinionPdf = testPdf(['의견서', '출원번호 ' + app, '접수번호 ' + opinionId, '2099.01.03']);
 
 async function main() {
   const profile = await mkdtemp(path.join(os.tmpdir(), 'dangdang-chromium-'));
@@ -25,11 +29,19 @@ async function main() {
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     page.on('dialog', dialog => dialog.dismiss());
-    await worker.evaluate(({ app, send, date, pdf }) => {
+    await worker.evaluate(({ app, send, date, pdf, pubNumbers, pubPdfs, opinionId }) => {
       const fetchOriginal = globalThis.fetch;
       globalThis.fixtureRequests = { kipris: 0, model: 0, pdf: 0 };
       const createOffscreen = chrome.offscreen.createDocument.bind(chrome.offscreen);
       globalThis.fixtureParserUnavailable = true;
+      let gazetteLookups = 0;
+      const sendMessage = chrome.runtime.sendMessage.bind(chrome.runtime);
+      chrome.runtime.sendMessage = (...args) => {
+        if (args[0]?.type === 'kipris_pdf_parse' && globalThis.fixtureParserUnavailable) {
+          return Promise.reject(new Error('Fixture: parser unavailable'));
+        }
+        return sendMessage(...args);
+      };
       chrome.offscreen.createDocument = options => {
         if (globalThis.fixtureParserUnavailable) return Promise.reject(new Error('Fixture: parser unavailable'));
         return createOffscreen(options);
@@ -43,7 +55,20 @@ async function main() {
           globalThis.fixtureRequests.kipris++;
           if (url.pathname.includes('relatedDocsonfileInfo')) return response('<items><item><applicationNumber>'
             + app + '</applicationNumber><documentNumber>' + send + '</documentNumber><documentDate>'
-            + date + '</documentDate><documentTitle>의견제출통지서</documentTitle></item></items>');
+            + date + '</documentDate><documentTitle>의견제출통지서</documentTitle></item>'
+            + '<item><applicationNumber>' + app + '</applicationNumber><documentNumber>' + opinionId
+            + '</documentNumber><documentDate>20990103</documentDate><documentTitle>의견서</documentTitle></item></items>');
+          if (url.pathname.includes('getPubFullTextInfoSearch')) {
+            gazetteLookups++;
+            const order = gazetteLookups === 1 ? [0, 1] : [1, 0];
+            return response('<items>' + order.map(index => '<item><publicationNumber>' + pubNumbers[index]
+              + '</publicationNumber><path>https://plus.kipris.or.kr/gazette-' + index + '.pdf?ticket='
+              + gazetteLookups + '</path></item>').join('') + '</items>');
+          }
+          if (url.pathname === '/gazette-0.pdf') return new Response(pubPdfs[0]);
+          if (url.pathname === '/gazette-1.pdf') {
+            return url.searchParams.get('ticket') === '1' ? new Response(null, { status: 410 }) : new Response(pubPdfs[1]);
+          }
           if (url.pathname.includes('IntermediateDocumentOPService') && !url.searchParams.get('sendNumber')) return response('<items/>');
           if (url.pathname.includes('IntermediateDocumentOPService') && url.searchParams.get('sendNumber') === send) return response('<pdfInfoV2><applicationNumber>'
             + app + '</applicationNumber><sendNumber>' + send
@@ -69,7 +94,7 @@ async function main() {
         settings: { onboardingDismissed: true },
         code_session: { prompt: '레거시', html: '<p>이전 세션</p>' }
       });
-    }, { app, send, date, pdf: testPdf() });
+    }, { app, send, date, pdf: testPdf(), pubNumbers, pubPdfs, opinionId });
     const browserCode = [];
     await page.route('https://api.exaone.ai/v1/chat/completions', async route => {
       const body = route.request().postDataJSON();
@@ -153,25 +178,38 @@ async function main() {
     const notice = page.getByRole('row').filter({ hasText: '의견제출통지서' });
     await notice.getByText('PDF 다운로드 경로가 만료됐거나 서버에서 찾을 수 없음').waitFor();
     await notice.getByRole('button', { name: '원문 다시 조회', exact: true }).click();
-    await page.getByText('PDF 확보 · 텍스트 추출기를 실행할 수 없음', { exact: false }).waitFor();
+    await notice.getByText('PDF 확보 · 텍스트 추출기를 실행할 수 없음', { exact: false }).waitFor();
     await page.waitForFunction(() => !document.querySelector('#patent-start').disabled);
     const unverified = page.waitForEvent('download');
-    await page.getByRole('button', { name: '미검증 PDF 다운로드', exact: true }).click();
+    await notice.getByRole('button', { name: '미검증 PDF 다운로드', exact: true }).click();
     const original = await unverified;
     assert.equal((await readFile(await original.path())).toString('utf8'), testPdf());
     await worker.evaluate(() => { globalThis.fixtureParserUnavailable = false; });
-    await page.getByRole('button', { name: '텍스트 추출 재시도', exact: true }).click();
-    await page.waitForFunction(() => document.querySelector('#patent-docs').textContent.includes('원문과 문서 식별 확인'));
+    await notice.getByRole('button', { name: '텍스트 추출 재시도', exact: true }).click();
+    await notice.getByText('원문과 문서 식별 확인', { exact: false }).waitFor();
     await page.waitForFunction(() => !document.querySelector('#patent-start').disabled);
     const lookup = await worker.evaluate(() => globalThis.fixtureRequests);
     assert.equal(lookup.model, 0);
     assert.equal(lookup.pdf, 2);
     const source = page.waitForEvent('download');
-    await page.getByRole('button', { name: 'PDF 다운로드', exact: true }).click();
+    await notice.getByRole('button', { name: 'PDF 다운로드', exact: true }).click();
     assert.match((await source).suggestedFilename(), /959999000000001\.pdf$/);
     const denied = await worker.evaluate(() => handleMessage({ type: 'kipris_key_state' },
       { id: chrome.runtime.id, url: 'https://fixture.invalid/', tab: { id: 1 } }));
     assert.equal(denied.type, 'denied');
+    const gazetteA = page.getByRole('row').filter({ hasText: pubNumbers[0] });
+    const gazetteB = page.getByRole('row').filter({ hasText: pubNumbers[1] });
+    await gazetteA.getByRole('button', { name: '텍스트 추출 재시도', exact: true }).click();
+    await gazetteA.getByText('원문과 문서 식별 확인', { exact: false }).waitFor();
+    await gazetteB.getByRole('button', { name: '원문 다시 조회', exact: true }).click();
+    await gazetteB.getByText('원문과 문서 식별 확인', { exact: false }).waitFor();
+    for (const [index, row] of [gazetteA, gazetteB].entries()) {
+      const event = page.waitForEvent('download');
+      await row.getByRole('button', { name: 'PDF 다운로드', exact: true }).click();
+      const file = await event;
+      assert.ok(file.suggestedFilename().endsWith(pubNumbers[index] + '.pdf'));
+      assert.equal((await readFile(await file.path())).toString('utf8'), pubPdfs[index]);
+    }
     console.log('PDF matched and downloaded');
 
     await page.click('#patent-start');
@@ -196,8 +234,22 @@ async function main() {
     await page.reload();
     await page.click('#btn-mode-work');
     await page.waitForFunction(() => document.querySelector('#patent-report').textContent.includes('시험 근거 문장입니다.'));
+    await worker.evaluate(async () => {
+      globalThis.fixtureParserUnavailable = true;
+      await chrome.storage.local.remove(CONFIG.storageKeys.kiprisKey);
+    });
+    const opinion = page.getByRole('row').filter({ hasText: opinionId });
+    const chooser = page.waitForEvent('filechooser');
+    await opinion.getByRole('button', { name: 'PDF 첨부', exact: true }).click();
+    await (await chooser).setFiles({ name: 'opinion.pdf', mimeType: 'application/pdf', buffer: Buffer.from(opinionPdf) });
+    await opinion.getByText('PDF 확보 · 텍스트 추출기를 실행할 수 없음', { exact: false }).waitFor();
+    const beforeRetry = await worker.evaluate(() => globalThis.fixtureRequests.kipris);
+    await worker.evaluate(() => { globalThis.fixtureParserUnavailable = false; });
+    await opinion.getByRole('button', { name: '텍스트 추출 재시도', exact: true }).click();
+    await opinion.getByText('원문과 문서 식별 확인', { exact: false }).waitFor();
+    assert.equal(await worker.evaluate(() => globalThis.fixtureRequests.kipris), beforeRetry);
     await page.click('#patent-delete');
-    await page.waitForFunction(() => document.querySelector('#patent-report').textContent === '');
+    await opinion.waitFor({ state: 'detached' });
     assert.deepEqual(errors, []);
     console.log('Chromium extension smoke passed: legacy migration, settings, code ZIP, PDF extraction, consent, diagnosis, restore, delete.');
   } finally {

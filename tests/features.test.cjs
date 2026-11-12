@@ -8,7 +8,7 @@ const paths = ['config.js', 'utils.js', 'api.js', 'coding.js', 'file-io.js', 'ki
 const source = paths.map(path => readFileSync(path, 'utf8')).join('\n');
 const testRuntime = fetch => {
   const ctx = vm.createContext({ URL, fetch, AbortController, AbortSignal, setTimeout, clearTimeout,
-    TextDecoder, TextEncoder, Blob, Response, console: { warn() {} } });
+    TextDecoder, TextEncoder, Blob, Response, crypto, console: { warn() {} } });
   return vm.runInContext(source + `\n({ CONFIG, LLMClient, chatCompletionURL, buildChatCompletionRequest,
     CodeProjects, FileIO, Kipris, PatentRules, PatentDiagnosis, resolveKeyForOrigin, isTrustedExtensionUI })`, ctx);
 };
@@ -246,6 +246,36 @@ test('중간서류 XML에서 발송번호와 모든 PDF 경로를 읽고 취소 
   signal.abort();
   await assert.rejects(Kipris.download(paths[1].path, signal.signal), { name: 'AbortError' });
   assert.equal(calls, 2);
+});
+
+test('공보 경로는 공보번호를 우선하며 번호 없는 경로는 정확한 해시로만 구별', async () => {
+  const { Kipris } = testRuntime(async () => new Response(xml([
+    '<item><publicationNumber>10-2099-0000011</publicationNumber><path>/file?ticket=alpha</path></item>',
+    '<item><docName>10-2099-0000012.pdf</docName><path>/file?ticket=beta</path></item>',
+    '<item><path>/file?ticket=gamma</path></item>',
+    '<item><path>/file?ticket=delta</path></item>'
+  ].join(''))));
+  const locations = await Kipris.pdfLocations('PUB', app, 'fixture-kipris', AbortSignal.timeout(1000));
+  assert.deepEqual(Array.from(locations, item => item.gazetteNumber), ['1020990000011', '1020990000012', null, null]);
+  assert.match(locations[2].gazetteLocator, /^[a-f0-9]{64}$/);
+  assert.notEqual(locations[2].gazetteLocator, locations[3].gazetteLocator);
+});
+
+test('공보 PDF는 출원번호가 같아도 요청한 공보번호와 다르면 검증하지 않음', async () => {
+  const { Kipris } = testRuntime();
+  const bytes = new TextEncoder().encode('%PDF-1.4\n' + ' '.repeat(150) + '%%EOF');
+  for (const [kind, title, label, expected, actual] of [
+    ['PUB', '공개특허공보', '공개번호', '1020990000011', '10-2099-0000012'],
+    ['REG', '등록특허공보', '등록번호', '100000011', '10-0000012']
+  ]) {
+    const extract = async () => ({ pageCount: 1, pages: [{ page: 1, text: title + '\n출원번호 ' + app + '\n' + label + ' ' + actual }] });
+    const mismatch = await Kipris.inspectPdf(bytes, app, { kind, gazetteNumber: expected }, extract);
+    assert.equal(mismatch.status, 'identity');
+    assert.equal(mismatch.pages.length, 0);
+    const match = await Kipris.inspectPdf(bytes, app, { kind, gazetteNumber: actual.replaceAll('-', '') }, extract);
+    assert.equal(match.status, 'verified');
+    assert.equal(match.gazetteNumber, actual.replaceAll('-', ''));
+  }
 });
 
 test('PDF 바이트·페이지·문서 식별자와 스캔 상태를 구분', async () => {

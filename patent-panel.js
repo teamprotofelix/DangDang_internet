@@ -140,7 +140,8 @@ class PatentPanel {
       const title = document.createElement('strong');
       title.textContent = doc.title;
       const details = document.createElement('div');
-      details.textContent = [doc.date, doc.id, doc.processing].filter(Boolean).join(' · ');
+      const number = Kipris.isGazette(doc.kind) ? doc.gazetteNumber : doc.id;
+      details.textContent = [doc.date, number, doc.processing].filter(Boolean).join(' · ');
       label.append(title, details);
       const state = row.insertCell();
       state.textContent = (Kipris.messages[doc.status] || doc.status) + (doc.pageCount ? ` · ${doc.pageCount}쪽` : '');
@@ -151,10 +152,14 @@ class PatentPanel {
         actions.append(this.panel.coding.button('열기', () => this.openPdf(doc, record.application, true)),
           this.panel.coding.button(label, () => this.openPdf(doc, record.application, false)));
       }
-      if (!busy && Kipris.apiPdfKinds.includes(doc.kind)
-        && (!doc.hasFile || Kipris.canRetryExtraction(doc.status))) {
-        actions.append(this.panel.coding.button(doc.hasFile ? '텍스트 추출 재시도' : '원문 다시 조회',
-          () => this.caseAction('kipris_start', { documentId: doc.id }, record.application)));
+      if (!busy && doc.hasFile && Kipris.canRetryExtraction(doc.status)) {
+        actions.append(this.panel.coding.button('텍스트 추출 재시도',
+          () => this.caseAction('kipris_extract_retry', { documentId: doc.id }, record.application)));
+      }
+      if (!busy && !doc.hasFile && Kipris.apiPdfKinds.includes(doc.kind)) {
+        const fullLookup = Kipris.isGazette(doc.kind) && !doc.gazetteNumber && !doc.gazetteLocator;
+        actions.append(this.panel.coding.button(fullLookup ? '전체 서류 다시 조회' : '원문 다시 조회',
+          () => this.caseAction('kipris_start', fullLookup ? {} : { documentId: doc.id }, record.application)));
       }
       if (!busy && doc.status !== 'verified' && ['APP', 'AM', 'OPINION', 'CORRECTION', 'OA', 'RD', 'RG', 'PUB', 'REG', 'CITATION'].includes(doc.kind)) {
         actions.append(this.panel.coding.button('PDF 첨부', () => {
@@ -168,7 +173,8 @@ class PatentPanel {
   }
 
   pdfName(app, doc) {
-    return CodeProjects.filename(`${app}_${doc.title.slice(0, 30)}_${doc.id}.pdf`.replace(/[\\/]/g, '_'), 'pdf');
+    const number = doc.gazetteNumber || doc.id;
+    return CodeProjects.filename(`${app}_${doc.title.slice(0, 30)}_${number}.pdf`.replace(/[\\/]/g, '_'), 'pdf');
   }
 
   async openPdf(doc, app, open) {

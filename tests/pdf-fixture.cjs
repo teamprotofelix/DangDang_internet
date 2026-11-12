@@ -2,8 +2,7 @@ const app = '1099990000001';
 const send = '959999000000001';
 const date = '20990102';
 
-function testPdf() {
-  const lines = ['의견제출통지서', '출원번호 ' + app, '발송번호 ' + send, '2099.01.02', '시험 근거 문장입니다.'];
+function testPdf(lines = ['의견제출통지서', '출원번호 ' + app, '발송번호 ' + send, '2099.01.02', '시험 근거 문장입니다.']) {
   const hex = char => char.charCodeAt(0).toString(16).padStart(4, '0');
   const characters = [...new Set(lines.join(''))];
   const content = ['BT /F1 14 Tf 40 750 Td',

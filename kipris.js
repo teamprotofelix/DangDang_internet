@@ -14,6 +14,7 @@ const Kipris = (() => {
     not_found: '서비스에 해당 자료가 없음',
     missing_path: '응답에서 일치하는 PDF 경로를 찾을 수 없음',
     expired_path: 'PDF 다운로드 경로가 만료됐거나 서버에서 찾을 수 없음',
+    gazette_unmatched: '공보 식별자가 일치하는 경로가 없음 · 전체 서류 조회 필요',
     unsafe_path: '허용된 KIPRIS PLUS HTTPS 경로가 아님',
     download: '원문 다운로드 실패 또는 리다이렉트 차단',
     timeout: 'KIPRIS PLUS 응답 시간 초과',
@@ -46,6 +47,7 @@ const Kipris = (() => {
   };
   const apiPdfKinds = ['OA', 'RD', 'RG', 'PUB', 'REG'];
   const canRetryExtraction = status => ['pdf_extract_pending', 'pdf_parser', 'pdf_parse'].includes(status);
+  const isGazette = kind => kind === 'PUB' || kind === 'REG';
 
   class Error extends globalThis.Error {
     constructor(code, extra = {}) {
@@ -285,11 +287,48 @@ const Kipris = (() => {
       rows: [...unique.values()].sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id)) };
   }
 
+  function gazetteNumbers(kind, text) {
+    const middle = kind === 'PUB' ? '(?:[ \\t-]*[0-9]){4}' : '';
+    const pattern = new RegExp('(?<![0-9])(?:10|20)' + middle + '(?:[ \\t-]*[0-9]){7}(?![0-9])', 'g');
+    return [...new Set((text.normalize('NFKC').match(pattern) || []).map(number))];
+  }
+
+  function gazetteNumberInPdf(kind, text) {
+    const label = kind === 'PUB' ? '공\\s*개\\s*번\\s*호' : '등\\s*록\\s*번\\s*호';
+    const values = [...text.normalize('NFKC').matchAll(new RegExp(label + '\\s*[:：]?\\s*([0-9][0-9 \\t-]*)', 'g'))];
+    const numbers = [...new Set(values.flatMap(match => gazetteNumbers(kind, match[1])))];
+    return numbers.length === 1 ? numbers[0] : null;
+  }
+
+  async function gazetteLocation(kind, app, row) {
+    const { path, docName } = row;
+    const declared = kind === 'PUB' ? row.publicationNumber || row.openNumber
+      : row.registrationNumber || row.registerNumber;
+    const application = number(row.applicationNumber);
+    let url;
+    try { if (path) url = safePdfURL(path); } catch { /* The download path validator reports the failure. */ }
+    const fromName = gazetteNumbers(kind, docName + ' ' + (url?.pathname.split('/').at(-1) || ''))
+      .filter(candidate => candidate !== app);
+    const numbers = declared ? gazetteNumbers(kind, declared) : fromName;
+    const gazetteNumber = numbers.length === 1 ? numbers[0] : null;
+    const fingerprint = url && await crypto.subtle.digest('SHA-256', new TextEncoder().encode(url.href));
+    const gazetteLocator = fingerprint && Array.from(new Uint8Array(fingerprint), byte => byte.toString(16).padStart(2, '0')).join('');
+    return { path, application, gazetteNumber, gazetteLocator, ambiguous: numbers.length > 1 || !!declared && !gazetteNumber };
+  }
+
   async function pdfLocations(kind, app, key, signal, sendNumber) {
-    if (kind === 'PUB' || kind === 'REG') {
+    if (isGazette(kind)) {
       const method = kind === 'PUB' ? 'getPubFullTextInfoSearch' : 'getAnnFullTextInfoSearch';
-      return allRecords(gazette + method, app, key, signal, root =>
-        records(root, 'path', row => ({ path: value(row, 'path'), title: value(row, 'docName') })));
+      const parse = rows => Promise.all(rows.map(row => gazetteLocation(kind, app, row)));
+      // Keep pagination fingerprints serializable without keeping the XML tree's parent links.
+      const rowsFrom = root => records(root, 'path', row => Object.fromEntries(
+        ['path', 'docName', 'publicationNumber', 'registrationNumber', 'openNumber', 'registerNumber', 'applicationNumber']
+          .map(field => [field, value(row, field)])));
+      try { return await parse(await allRecords(gazette + method, app, key, signal, rowsFrom)); }
+      catch (error) {
+        if (error.partial) error.partial = await parse(error.partial);
+        throw error;
+      }
     }
     const path = rest + `IntermediateDocument${pdfServices[kind]}Service/pdfInfoV2`;
     return allRecords(path, app, key, signal, root => records(root, 'sendNumber', row => ({
@@ -370,18 +409,22 @@ const Kipris = (() => {
     const titleOk = doc.kind === 'PUB' ? /공개.*공보/.test(compact)
       : doc.kind === 'REG' ? /등록.*공보/.test(compact)
       : doc.kind === 'ATTACHMENT' || documentType(compact) === doc.kind || compact.includes(doc.title.replace(/\s/g, ''));
+    const gazetteNumber = isGazette(doc.kind) && gazetteNumberInPdf(doc.kind, first);
     const idOk = doc.kind === 'CITATION'
       ? first.normalize('NFKC').toUpperCase().replace(/[^A-Z0-9]/g, '').includes(doc.citationNumber)
-      : compact.includes(app) && titleOk && (['PUB', 'REG'].includes(doc.kind)
-        || (compact.includes(doc.id) && dates.includes(doc.date)));
+      : compact.includes(app) && titleOk && (isGazette(doc.kind)
+        ? !!gazetteNumber && (!doc.gazetteNumber || doc.gazetteNumber === gazetteNumber)
+        : compact.includes(doc.id) && dates.includes(doc.date));
     const exactPages = pages.length === parsed.pageCount && pages.every(page => page.text);
     return {
       status: !exactPages ? 'pdf_text' : idOk ? 'verified' : 'identity',
       size: bytes.length, pageCount: parsed.pageCount,
-      pages: idOk ? pages : [], identityVerified: idOk
+      pages: idOk ? pages : [], identityVerified: idOk,
+      ...(idOk && gazetteNumber ? { gazetteNumber } : {})
     };
   }
 
   return { Error, messages, applicationNumber, documentType, normalizedTitle, safePdfURL, getHistory, pdfLocations,
-    getClaimHistory, registeredClaims, download, checkPdfBytes, inspectPdf, citations, maxPdf, apiPdfKinds, canRetryExtraction };
+    getClaimHistory, registeredClaims, download, checkPdfBytes, inspectPdf, citations, maxPdf, apiPdfKinds,
+    canRetryExtraction, isGazette, gazetteNumberInPdf };
 })();
