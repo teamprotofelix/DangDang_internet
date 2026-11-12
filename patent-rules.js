@@ -16,7 +16,7 @@ const PatentRules = (() => {
       ['12', '임의로 포함한다는 표현의 선택성 및 종속관계를 확인', 'claims'],
       ['13', '조합·결합이 문맥에서 어떤 역할인지 확인하고 용어 혼용과 논증 누락을 구별'],
       ['14', '통지서만으로 고칠 수 있는 단순오기를 제외하고 외부 원문이 필요한 오기를 구별'],
-      ['15', '최후통지의 이유별로 선행 통지와 보정 전후의 청구항 전체 및 인용관계를 대조. 실제 변경으로 비로소 생긴 이유인지, 보정 전부터 있었는지, 확인 불가인지 근거와 함께 표시. 새 문헌이나 두 번째 통지라는 사실로 발생을 단정하지 말 것', 'final_notice'],
+      ['15', '최후통지의 이유별로 선행 통지와 보정 전후의 청구항 전체 및 인용관계를 대조. 실제 변경으로 비로소 생긴 이유인지, 보정 전부터 있었는지, 확인 불가인지 표시. 최후통지·선행 통지와 requiredOriginals의 각 문서에서 직접 대조한 근거를 인용. 쟁점에 필요한 인용발명·명세서·도면을 대조할 수 없으면 확인 불가로 표시. 새 문헌이나 두 번째 통지라는 사실로 발생을 단정하지 말 것', 'final_notice'],
       ['16', '청구항 말미의 청구대상이 용도 자체인지, 치료용 조성물처럼 용도로 한정한 물건인지 구별하여 명확성을 검토', 'claims'],
       ['17', '당시 청구항의 바람직하게(는), 더 또는 더욱 바람직하게(는), 특히를 전수 확인하고 표현 전후 두 한정의 범위를 대조. 설명에만 있는 표현과 기술용어 특이적으로는 제외. 선택적 표현으로 단정하지 말 것', 'claims']
     ],
@@ -174,7 +174,7 @@ const PatentRules = (() => {
     return findings;
   }
 
-  function readFindings(raw, rules, evidence, target) {
+  function readFindings(raw, rules, evidence, target, requiredOriginals = []) {
     const parsed = JSON.parse(String(raw).trim().replace(/^```(?:json)?\s*|\s*```$/g, ''));
     if (!Array.isArray(parsed)) throw new Error('모델이 규칙별 JSON 배열을 반환하지 않았습니다.');
     const rows = [];
@@ -186,7 +186,8 @@ const PatentRules = (() => {
       const fields = ['comparison', 'analysis', 'verdict'];
       if (fields.some(field => typeof item[field] !== 'string' || !item[field].trim() || item[field].length > 1600)) continue;
       if (!Array.isArray(item.evidence)) continue;
-      const refs = item.evidence.slice(0, 6).filter(ref => typeof ref?.quote === 'string'
+      const refLimit = rule === 'OA-15' ? 6 + requiredOriginals.length : 6;
+      const refs = item.evidence.slice(0, refLimit).filter(ref => typeof ref?.quote === 'string'
         && compact(ref.quote).length >= 5 && ref.quote.length <= 1200
         && evidence.some(document => document.id === ref.document
           && document.pages.some(page => page.page === ref.page && compact(page.text).includes(compact(ref.quote)))));
@@ -194,7 +195,11 @@ const PatentRules = (() => {
       if (item.level !== '확인 불가' && rule === 'OA-07'
         && !evidence.some(doc => doc.id !== target && doc.kind === 'CITATION' && doc.status === 'verified'
           && refs.some(ref => ref.document === doc.id))) continue;
-      if (item.level !== '확인 불가' && ['OA-15', 'RD-01', 'RD-02', 'RD-03', 'RD-05'].includes(rule)
+      if (item.level !== '확인 불가' && rule === 'OA-15'
+        && (!evidence.some(doc => doc.id !== target && doc.kind === 'OA' && doc.status === 'verified'
+          && refs.some(ref => ref.document === doc.id))
+          || !requiredOriginals.every(id => refs.some(ref => ref.document === id)))) continue;
+      if (item.level !== '확인 불가' && ['RD-01', 'RD-02', 'RD-03', 'RD-05'].includes(rule)
         && !refs.some(ref => ref.document !== target)) continue;
       rows.push({ rule, target, level: item.level, code: null, evidence: refs,
         comparison: item.comparison, analysis: item.analysis, verdict: item.verdict });

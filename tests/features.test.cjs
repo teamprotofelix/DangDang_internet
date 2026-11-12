@@ -10,7 +10,7 @@ const testRuntime = fetch => {
   const ctx = vm.createContext({ URL, fetch, AbortController, AbortSignal, setTimeout, clearTimeout,
     TextDecoder, TextEncoder, Blob, Response, crypto, console: { warn() {} } });
   return vm.runInContext(source + `\n({ CONFIG, LLMClient, chatCompletionURL, buildChatCompletionRequest,
-    CodeProjects, FileIO, Kipris, PatentRules, PatentDiagnosis, resolveKeyForOrigin, isTrustedExtensionUI })`, ctx);
+    CodeProjects, FileIO, Kipris, PatentRules, PatentDiagnosis, computeRequestBudget, resolveKeyForOrigin, isTrustedExtensionUI })`, ctx);
 };
 const plain = value => JSON.parse(JSON.stringify(value));
 const app = '1099990000001';
@@ -470,6 +470,70 @@ test('최후통지 규칙은 선행 통지와 보정 전후 청구항 판본을 
   assert.ok(incomplete.findings.some(row => row.rule === 'OA-15' && row.level === '확인 불가'));
 });
 
+test('OA-15는 선행·최후통지에 연결된 원문을 보내고 두 통지만 인용한 응답을 보류', async () => {
+  const priorNumber = '1020990000001';
+  const finalNumber = '1020990000002';
+  const document = (id, kind, title, date, page, text) => ({ id, kind, title, date,
+    status: 'verified', identityVerified: true, pages: [{ page, text }] });
+  const filing = { ...document('app', 'APP', '특허출원서', '20990101', 1, '출원 명세서의 장치 구성'), serial: '1' };
+  const prior = document('prior', 'OA', '의견제출통지서', '20990102', 1, '진보성 거절이유와 KR 10-2099-0000001의 적용');
+  const amendment = { ...document('am', 'AM', '보정서', '20990103', 1, '보정서의 온도 센서 구성'), serial: '2' };
+  const final = document('final', 'OA', '최후의견제출통지서', '20990104', 1, '특허법 제29조 제2항, KR 10-2099-0000002의 적용');
+  const cited = [prior, final].map((notice, i) => ({
+    ...document('citation-' + i, 'CITATION', '인용발명 ' + i, '', i + 2, '인용발명 ' + i + '의 원문 대조 구성'),
+    citationNumber: [priorNumber, finalNumber][i], citedBy: [notice.id]
+  }));
+  const record = { application: app, docs: [filing, prior, amendment, final, ...cited], historyStatus: 'complete',
+    collectionStatus: 'complete', claimStatus: 'complete', claimHistory: { events: [filing, amendment], changes: [
+      { ...filing, claim: '1', change: '신규', text: '센서를 갖는 장치' },
+      { ...amendment, claim: '1', change: '수정', text: '온도 센서를 갖는 장치' }
+    ] } };
+  const reference = doc => ({ document: doc.id, page: doc.pages[0].page, quote: doc.pages[0].text });
+  const noFinding = '검토한 규칙에서 발견되지 않음';
+  let requested;
+  const run = async (docs, evidence, level = noFinding) => {
+    requested = undefined;
+    const { PatentDiagnosis } = testRuntime(async (_, options) => {
+      const input = JSON.parse(JSON.parse(options.body).messages[1].content);
+      const checksFinal = input.rules.some(([rule]) => rule === 'OA-15');
+      if (checksFinal) requested = input;
+      const rows = checksFinal ? [{ rule: 'OA-15', level, evidence,
+        comparison: '비교', analysis: '분석', verdict: '판정' }] : [];
+      return Response.json({ choices: [{ message: { content: JSON.stringify(rows) }, finish_reason: 'stop' }] });
+    });
+    const report = await PatentDiagnosis.evaluate({ ...record, docs }, exa, new AbortController().signal, async () => {});
+    return report.findings.find(row => row.rule === 'OA-15');
+  };
+  const notices = [prior, final].map(reference);
+  const originals = cited.map(reference);
+  const noticesOnly = await run(record.docs, notices);
+  assert.deepEqual(requested.documents.map(doc => doc.id), [final.id, prior.id, ...cited.map(doc => doc.id)]);
+  assert.deepEqual(requested.requiredOriginals, cited.map(doc => doc.id));
+  assert.equal(requested.priorVersions[0].version.claims[0].text, '센서를 갖는 장치');
+  assert.equal(requested.version.claims[0].text, '온도 센서를 갖는 장치');
+  assert.equal(noticesOnly.level, '확인 불가');
+  assert.equal((await run(record.docs, [...notices, originals[0], { ...originals[1], page: 99 }], '조건부 점검')).level, '확인 불가');
+  assert.equal((await run(record.docs, [notices[1], ...originals])).level, '확인 불가');
+  assert.equal((await run(record.docs, [...notices, ...originals])).level, noFinding);
+  for (const docs of [record.docs.slice(0, -1), [...record.docs.slice(0, -1), { ...cited[1], status: 'pdf_text' }]]) {
+    const missing = await run(docs, [...notices, ...originals]);
+    assert.equal(requested, undefined);
+    assert.equal(missing.level, '확인 불가');
+    assert.match(missing.verdict, /인용발명 원문을 모두 검증하지 못함/);
+  }
+
+  const formal = [prior, final].map(doc => ({ ...doc, pages: [{ page: 1, text: '청구항 인용번호 오기 관련 거절이유' }] }));
+  assert.equal((await run([filing, amendment, ...formal], formal.map(reference))).level, noFinding);
+  assert.deepEqual(requested.requiredOriginals, []);
+
+  const enablement = { ...formal[1], pages: [{ page: 1, text: '특허법 제42조 제3항의 실시 가능 요건 관련 거절이유' }] };
+  const specDocs = [filing, amendment, formal[0], enablement];
+  const specNotices = [formal[0], enablement].map(reference);
+  assert.equal((await run(specDocs, specNotices)).level, '확인 불가');
+  assert.deepEqual(requested.requiredOriginals, [filing.id, amendment.id]);
+  assert.equal((await run(specDocs, [...specNotices, ...[filing, amendment].map(reference)])).level, noFinding);
+});
+
 test('긴 문서 대조는 여러 원문의 쪽별 발췌를 사용하고 발견 없음 판정은 보류', async () => {
   const quote = '청구항 제1항의 문언';
   const pages = [1, 2].map(page => ({ page, text: quote + ' 추가 문장'.repeat(7000) }));
@@ -477,6 +541,7 @@ test('긴 문서 대조는 여러 원문의 쪽별 발췌를 사용하고 발견
     status: 'verified', identityVerified: true, pages };
   const decision = { ...notice, id: 'rd', kind: 'RD', title: '거절결정서', date: '20990102' };
   let cross = false;
+  const outputs = [];
   const { PatentDiagnosis } = testRuntime(async (_, options) => {
     const body = JSON.parse(options.body);
     const input = JSON.parse(body.messages[1].content);
@@ -485,7 +550,7 @@ test('긴 문서 대조는 여러 원문의 쪽별 발췌를 사용하고 발견
         && input.documents.length === 2 && input.documents.every(doc =>
           doc.pages.some(page => page.page === 2) && doc.pages.every(page => page.text.length < pages[0].text.length));
     }
-    assert.equal(body.max_tokens, 512);
+    outputs.push(body.max_tokens);
     const evidence = input.documents.map(doc => ({ document: doc.id, page: 1, quote }));
     const rows = input.rules.map(([rule]) => ({ rule, evidence, comparison: '비교', analysis: '분석', verdict: '판정',
       level: rule === 'RD-02' ? '조건부 점검' : '검토한 규칙에서 발견되지 않음' }));
@@ -495,7 +560,9 @@ test('긴 문서 대조는 여러 원문의 쪽별 발췌를 사용하고 발견
   const report = await PatentDiagnosis.evaluate(record, { ...exa, modelContextTokens: 4096, modelMaxOutputTokens: 512 },
     new AbortController().signal, async () => {});
   assert.equal(cross, true);
-  assert.deepEqual(plain(report.tokenBudget), { requested: 30000, outputPerCall: 512 });
+  assert.ok(outputs.length && outputs.every(value => value >= 256 && value <= 512));
+  assert.deepEqual(plain(report.tokenBudget), { requested: 30000,
+    outputPerCall: Math.max(...outputs), minOutputPerCall: Math.min(...outputs) });
   assert.equal(report.findings.find(row => row.rule === 'RD-01').level, '확인 불가');
   assert.equal(report.findings.find(row => row.rule === 'RD-02').level, '조건부 점검');
   assert.ok(report.omitted.some(row => row.document === notice.id && row.pages.includes(2)));
@@ -514,6 +581,47 @@ test('출력과 입력 여유를 허용하는 설정에서는 진단 호출에 3
   { ...exa, modelContextTokens: 65536, modelMaxOutputTokens: 30000 }, new AbortController().signal, async () => {});
   assert.equal(requested, 30000);
   assert.equal(report.tokenBudget.outputPerCall, 30000);
+});
+
+test('32k 컨텍스트와 30k 출력 요청에서도 OA-17의 긴 청구항 40개 전문을 먼저 확보', async () => {
+  const filing = { id: 'app', kind: 'APP', title: '특허출원서', date: '20990101', serial: '1' };
+  const quote = '청구항 문언의 명확성에 관한 검토';
+  const notice = { id: 'oa', kind: 'OA', title: '의견제출통지서', date: '20990102',
+    status: 'verified', identityVerified: true, pages: [{ page: 1, text: quote }] };
+  const changes = Array.from({ length: 40 }, (_, index) => ({ ...filing, claim: String(index + 1), change: '신규',
+    text: `바람직하게는 온도 센서를 포함하며 ${'측정값을 기록하고 분석하는 장치와 '.repeat(27)}최종 구성 ${index + 1}` }));
+  const calls = [];
+  const { PatentDiagnosis, computeRequestBudget } = testRuntime(async (_, options) => {
+    const body = JSON.parse(options.body);
+    const input = JSON.parse(body.messages[1].content);
+    calls.push({ body, input });
+    const rows = input.rules.map(([rule]) => ({ rule, level: '검토한 규칙에서 발견되지 않음',
+      evidence: [{ document: notice.id, page: 1, quote }], comparison: '비교', analysis: '분석', verdict: '판정' }));
+    return Response.json({ choices: [{ message: { content: JSON.stringify(rows) }, finish_reason: 'stop' }] });
+  });
+  const record = { application: app, docs: [filing, notice], historyStatus: 'complete',
+    collectionStatus: 'complete', claimStatus: 'complete', claimHistory: { events: [filing], changes } };
+  const config = { ...exa, maxTokens: 30000, modelMaxOutputTokens: 30000 };
+  const evaluate = row => PatentDiagnosis.evaluate(row, config, new AbortController().signal, async () => {});
+  const report = await evaluate(record);
+  const request = calls.find(({ input }) => input.rules.some(([rule]) => rule === 'OA-17'));
+  assert.ok(request);
+  assert.deepEqual(request.input.version.claims.map(claim => claim.text), changes.map(claim => claim.text));
+  assert.deepEqual(request.input.documents[0].pages, notice.pages);
+  const { inputTokens, margin, contextLimit } = computeRequestBudget({ apiConfig: config, messages: request.body.messages });
+  assert.ok(inputTokens + margin + Math.floor(contextLimit * 0.6) > contextLimit);
+  assert.equal(request.body.max_tokens, contextLimit - inputTokens - margin);
+  assert.ok(request.body.max_tokens < calls.find(({ input }) => !input.version).body.max_tokens);
+  assert.equal(report.tokenBudget.requested, 30000);
+  assert.equal(report.tokenBudget.minOutputPerCall, Math.min(...calls.map(({ body }) => body.max_tokens)));
+  assert.equal(report.tokenBudget.outputPerCall, Math.max(...calls.map(({ body }) => body.max_tokens)));
+  assert.equal(report.findings.find(row => row.rule === 'OA-17').level, '검토한 규칙에서 발견되지 않음');
+
+  calls.length = 0;
+  const tooLong = changes.map(change => ({ ...change, text: change.text.repeat(4) }));
+  const limited = await evaluate({ ...record, claimHistory: { ...record.claimHistory, changes: tooLong } });
+  assert.ok(!calls.some(({ input }) => input.rules.some(([rule]) => rule === 'OA-17')));
+  assert.match(limited.findings.find(row => row.rule === 'OA-17').verdict, /청구항 판본도 모델 입력 한도를 초과/);
 });
 
 test('검증된 특허 원문이 없으면 출원번호만 모델에 전송하지 않음', async () => {
