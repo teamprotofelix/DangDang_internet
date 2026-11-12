@@ -229,6 +229,7 @@ const Kipris = (() => {
     if (/거절결정/.test(name)) return 'RD';
     if (/(특허|실용신안|등록)결정/.test(name)) return 'RG';
     if (/명세서.*보정|보정서/.test(name)) return 'AM';
+    if (/^(?:특허|실용신안)출원서|^국내서면제출|^국내단계진입/.test(name)) return 'APP';
     if (/의견서/.test(name)) return 'OPINION';
     if (/정정/.test(name)) return 'CORRECTION';
     return 'OTHER';

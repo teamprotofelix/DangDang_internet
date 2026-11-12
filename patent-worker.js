@@ -39,13 +39,10 @@ const PatentWorker = (() => {
 
   async function savePdf(record, doc, bytes, source) {
     const inspection = await Kipris.inspectPdf(bytes, record.application, doc, extract);
-    const previous = { ...doc };
-    Object.assign(doc, inspection, { source, hasFile: true });
-    try { await PatentStore.saveWithFile(record, doc.id, bytes); }
-    catch (error) {
-      Object.assign(doc, previous, { hasFile: !!previous.hasFile });
-      throw error;
-    }
+    const verified = { ...doc, ...inspection, source, hasFile: true };
+    const checkpoint = { ...record, docs: record.docs.map(item => item === doc ? verified : item) };
+    await PatentStore.saveWithFile(checkpoint, doc.id, bytes);
+    Object.assign(doc, verified);
   }
 
   async function collect(record, key, signal) {
@@ -63,7 +60,7 @@ const PatentWorker = (() => {
           return saved?.hasFile && saved.kind === row.kind && saved.date === row.date && saved.title === row.title
             ? { ...row, ...saved, processing: row.processing }
             : { ...row, status: ['OA', 'RD', 'RG'].includes(row.kind) ? 'pending'
-              : ['AM', 'OPINION', 'CORRECTION'].includes(row.kind) ? 'manual' : 'other' };
+              : ['APP', 'AM', 'OPINION', 'CORRECTION'].includes(row.kind) ? 'manual' : 'other' };
         }).concat(record.docs.filter(doc => ['PUB', 'REG'].includes(doc.kind) || doc.kind === 'CITATION'));
         record.claimStatus = record.registeredClaimStatus = 'pending';
         record.claimHistory = null;
@@ -258,7 +255,7 @@ const PatentWorker = (() => {
       const record = await PatentStore.get(app) || newCase(app);
       if (type === 'kipris_attach') {
         const doc = record.docs.find(item => item.id === data.id);
-        if (!doc || !['AM', 'OPINION', 'CORRECTION', 'OA', 'RD', 'RG', 'PUB', 'REG', 'CITATION'].includes(doc.kind)) {
+        if (!doc || !['APP', 'AM', 'OPINION', 'CORRECTION', 'OA', 'RD', 'RG', 'PUB', 'REG', 'CITATION'].includes(doc.kind)) {
           return { error: '첨부할 문서를 목록에서 선택해 주세요.' };
         }
         if (typeof data.encoded !== 'string' || data.encoded.length > Math.ceil(Kipris.maxPdf / 3) * 4) throw new Kipris.Error('pdf');

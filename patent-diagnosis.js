@@ -23,7 +23,7 @@ const PatentDiagnosis = (() => {
       if (version) versions[target.id] = version;
       if (family === 'RC') findings.push(...PatentRules.registeredFindings(target, version));
       const external = record.docs.filter(doc => (doc.kind === 'CITATION' && doc.citedBy.includes(target.id))
-        || (doc.kind === 'AM' && doc.id === version?.steps?.at(-1)?.id));
+        || (['APP', 'AM'].includes(doc.kind) && doc.id === version?.steps?.at(-1)?.id));
       const selected = [];
       const evidence = [target];
       for (const [suffix, instruction, requires] of PatentRules.groups[family]) {
@@ -35,7 +35,7 @@ const PatentDiagnosis = (() => {
         else if (requires === 'claims' && (record.historyStatus !== 'complete' || version.status !== 'reconstructed')) {
           reason = record.claimStatus !== 'complete' ? (Kipris.messages[record.claimStatus] || version.reason) : version.reason;
         } else if (requires === 'external' && (record.historyStatus !== 'complete'
-          || version.status !== 'reconstructed' || !external.some(doc => doc.kind === 'AM' && full(doc))
+          || version.status !== 'reconstructed' || !external.some(doc => ['APP', 'AM'].includes(doc.kind) && full(doc))
           || (rule === 'OA-07' && (!external.some(doc => doc.kind === 'CITATION') || !external.every(full))))) {
           reason = '통지 당시 명세서 또는 인용발명 원문과 판본의 대조가 필요함';
         } else if (requires === 'notices' && !earlierComplete) {
@@ -96,7 +96,7 @@ const PatentDiagnosis = (() => {
           rule[0] === 'OA-' + suffix && ['claims', 'external'].includes(type));
         const focused = { ...task, rules: [rule], version: needsVersion ? task.version : undefined };
         const evidence = cross ? task.evidence.filter(doc => doc.id === task.target.id
-          || (rule[0].startsWith('OA-') ? ['AM', 'CITATION'].includes(doc.kind)
+          || (rule[0].startsWith('OA-') ? ['APP', 'AM', 'CITATION'].includes(doc.kind)
             : doc.kind === (rule[0] === 'RD-06' ? 'OPINION' : 'OA'))) : [task.target];
         const fits = (candidate, docs) => computeRequestBudget({
           apiConfig: config, messages: payload(candidate, docs), outputReserveTokens: reserve

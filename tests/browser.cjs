@@ -21,6 +21,7 @@ async function main() {
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
     const id = new URL(worker.url()).host;
     const page = context.pages()[0] || await context.newPage();
+    page.setDefaultTimeout(18000);
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     page.on('dialog', dialog => dialog.dismiss());
@@ -68,7 +69,8 @@ async function main() {
       return route.fulfill({ json: { choices: [{ message: { content }, finish_reason: 'stop' }] } });
     });
     await page.goto('chrome-extension://' + id + '/sidepanel.html');
-    await page.waitForSelector('.pose-interaction-row button');
+    await page.locator('#btn-pet').waitFor({ state: 'attached' });
+    console.log('Companion panel loaded');
     assert.equal(await page.locator('#toggle-content-aware').isChecked(), false);
     await page.click('#btn-mode-code');
     await page.waitForSelector('#code-files code');
@@ -85,6 +87,7 @@ async function main() {
     await page.click('#kipris-key-save');
     await page.waitForFunction(() => document.querySelector('#kipris-key-status').textContent.includes('키가 저장'));
     await page.click('#btn-close-settings');
+    console.log('Provider and KIPRIS settings saved');
 
     await page.click('#btn-mode-chat');
     await page.check('#chat-code-enabled');
@@ -97,6 +100,7 @@ async function main() {
     await page.click('#btn-code-zip');
     assert.equal((await zip).suggestedFilename(), 'dangdang-project.zip');
 
+    console.log('Coding project downloaded');
     await page.click('#btn-mode-work');
     await page.fill('#patent-application', '10-9999-0000001');
     await page.click('#patent-lookup');
@@ -109,6 +113,7 @@ async function main() {
     const denied = await worker.evaluate(() => handleMessage({ type: 'kipris_key_state' },
       { id: chrome.runtime.id, url: 'https://fixture.invalid/', tab: { id: 1 } }));
     assert.equal(denied.type, 'denied');
+    console.log('PDF matched and downloaded');
 
     await page.click('#patent-start');
     await page.waitForFunction(() => document.querySelector('#patent-status').textContent.includes('외부 분석을 취소'));

@@ -147,7 +147,7 @@ class PatentPanel {
         actions.append(this.panel.coding.button('열기', () => this.openPdf(doc, record.application, true)),
           this.panel.coding.button('저장', () => this.openPdf(doc, record.application, false)));
       }
-      if (!busy && doc.status !== 'verified' && ['AM', 'OPINION', 'CORRECTION', 'OA', 'RD', 'RG', 'PUB', 'REG', 'CITATION'].includes(doc.kind)) {
+      if (!busy && doc.status !== 'verified' && ['APP', 'AM', 'OPINION', 'CORRECTION', 'OA', 'RD', 'RG', 'PUB', 'REG', 'CITATION'].includes(doc.kind)) {
         actions.append(this.panel.coding.button('PDF 첨부', () => {
           this.attachTo = { app: record.application, id: doc.id };
           this.fileInput.click();
