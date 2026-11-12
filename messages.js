@@ -33,10 +33,6 @@ const MSG_TYPING           = 'typing';
 const MSG_ERROR            = 'error';
 
 // --- 업무 모드 실행 상태 (P0-5: idle/running/succeeded/failed/timed_out/cancelled) ---
-const MSG_WORK_STARTED     = 'work_started';   // { runId, mode, status:'running' }
-const MSG_WORK_RESULT      = 'work_result';    // { runId, mode, content, status:'succeeded'|'partial', processed?, total? }
-const MSG_WORK_ERROR       = 'work_error';     // { runId, message, status:'failed'|'timed_out' }
-const MSG_WORK_CANCEL      = 'work_cancel';    // Side Panel → Background: { runId }
 
 // --- 페이지 컨텍스트 (탭별 격리) ---
 const MSG_REQUEST_PAGE_CONTENT = 'request_page_content'; // Background → Content

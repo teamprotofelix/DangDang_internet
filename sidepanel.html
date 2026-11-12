@@ -24,7 +24,7 @@
       </div>
       <div class="mode-switch" role="tablist" aria-label="화면 전환">
         <button type="button" id="btn-mode-chat" class="mode-switch-btn active" role="tab" aria-selected="true">💬 대화</button>
-        <button type="button" id="btn-mode-work" class="mode-switch-btn" role="tab" aria-selected="false">💼 업무</button>
+        <button type="button" id="btn-mode-work" class="mode-switch-btn" role="tab" aria-selected="false">💼 특허 진단</button>
         <button type="button" id="btn-mode-code" class="mode-switch-btn" role="tab" aria-selected="false">⚡ 코딩</button>
       </div>
       <div class="header-actions">
@@ -75,14 +75,14 @@
       <div class="setting-group">
         <label class="setting-label">🌐 API 주소 (Base URL)</label>
         <input type="text" id="input-api-base" class="setting-input"
-               placeholder="https://llm.moip.go.kr/api/v1" />
+               placeholder="https://api.deepseek.com" />
       </div>
 
       <!-- 모델명 -->
       <div class="setting-group">
         <label class="setting-label">🧠 모델명 (Model)</label>
         <input type="text" id="input-model" class="setting-input"
-               placeholder="gpt-oss-120b" />
+               placeholder="deepseek-v4-flash" />
       </div>
 
       <!-- API 키 -->
@@ -147,6 +147,24 @@
 
       <hr class="setting-divider" />
 
+      <h3>KIPRIS PLUS</h3>
+      <section class="setting-group">
+        <label class="setting-label" for="kipris-key">KIPRIS PLUS API 키</label>
+        <div class="api-key-row">
+          <input id="kipris-key" class="setting-input" type="password" autocomplete="off" />
+          <button id="kipris-key-visibility" class="icon-btn" type="button" aria-label="KIPRIS PLUS 키 표시 또는 숨기기">👁️</button>
+        </div>
+        <label class="setting-label" for="kipris-test-application">연결 검사에 사용할 출원번호</label>
+        <input id="kipris-test-application" class="setting-input" inputmode="numeric" />
+        <div class="code-gen-row">
+          <button id="kipris-key-save" type="button" class="btn-small">키 저장</button>
+          <button id="kipris-key-remove" type="button" class="btn-small">키 삭제</button>
+          <button id="kipris-key-test" type="button" class="btn-small">연결 검사</button>
+        </div>
+        <p id="kipris-key-status" role="status"></p>
+      </section>
+
+      <hr class="setting-divider" />
       <h3>🎮 기능 설정</h3>
       <div class="setting-group">
         <div class="toggle-item">
@@ -163,8 +181,12 @@
         </div>
         <div class="toggle-item">
           <span>웹 콘텐츠 인식</span>
-          <input type="checkbox" id="toggle-content-aware" checked />
+          <input type="checkbox" id="toggle-content-aware" />
         </div>
+        <label class="toggle-item" for="toggle-model-memory">
+          <span>대화 모델에 기억 메모 보내기</span>
+          <input type="checkbox" id="toggle-model-memory" />
+        </label>
         <div class="toggle-item">
           <span>아바타 다가가기</span>
           <input type="checkbox" id="toggle-approach" />
@@ -240,7 +262,7 @@
         </div>
         <div class="data-btn-row">
           <button id="btn-export" class="btn-small btn-export">📥 내보내기 (JSON)</button>
-          <button id="btn-import" class="btn-small btn-import" onclick="document.getElementById('import-file').click()">📤 가져오기</button>
+          <button id="btn-import" class="btn-small btn-import">📤 가져오기</button>
           <input type="file" id="import-file" accept=".json" style="display:none" />
         </div>
       </div>
@@ -274,101 +296,51 @@
     <!-- ====== 업무 모드 패널 (숨김) ====== -->
     <div id="work-panel" class="work-panel hidden">
       <div class="work-scroll">
-      <div class="work-header">
-        <span class="work-icon">💼</span>
-        <span>업무 모드 — 특허 심사</span>
-      </div>
-
-      <!-- 입력 영역 A: 출원발명 / 명세서 -->
-      <div class="work-input-group">
-        <div class="work-label-row">
-          <label class="work-label" id="work-label-a">📄 명세서 (출원발명)</label>
-          <button type="button" class="btn-upload-file" id="btn-upload-work-a" data-target="a" title="파일에서 글자 넣기">📎 파일</button>
+        <div class="work-header"><h2>특허 심사품질 진단</h2></div>
+        <label class="setting-label" for="patent-application">출원번호</label>
+        <input id="patent-application" class="setting-input" placeholder="특허·실용신안 13자리" inputmode="numeric" />
+        <div class="work-actions patent-actions">
+          <button id="patent-lookup" class="work-btn" type="button">서류 조회·다운로드</button>
+          <button id="patent-start" class="work-btn" type="button">진단 시작</button>
+          <button id="patent-cancel" class="btn-small" type="button" disabled>취소</button>
         </div>
-        <textarea id="work-input-a" class="work-textarea"
-                  placeholder="특허 명세서 또는 청구범위를 붙여넣거나, 파일을 올려주세요..."
-                  rows="6"></textarea>
-        <span class="work-char-count" id="work-char-count-a">0자</span>
-      </div>
-
-      <!-- 입력 영역 B: 비교대상 / 의견서 -->
-      <div class="work-input-group" id="work-input-group-b">
-        <div class="work-label-row">
-          <label class="work-label" id="work-label-b">📋 비교대상발명 / 의견제출통지서</label>
-          <button type="button" class="btn-upload-file" id="btn-upload-work-b" data-target="b" title="파일에서 글자 넣기">📎 파일</button>
+        <p id="patent-status" role="status" aria-live="polite"></p>
+        <div id="patent-docs"></div>
+        <input id="patent-attachment" type="file" accept="application/pdf,.pdf" hidden />
+        <div class="code-gen-row patent-actions">
+          <button id="patent-zip" class="btn-small" type="button" disabled>원문 ZIP</button>
+          <button id="patent-delete" class="btn-small" type="button" disabled>이 출원 자료 삭제</button>
         </div>
-        <textarea id="work-input-b" class="work-textarea"
-                  placeholder="비교대상 명세서 또는 의견제출통지서를 붙여넣거나, 파일을 올려주세요..."
-                  rows="6"></textarea>
-        <span class="work-char-count" id="work-char-count-b">0자</span>
-      </div>
-      <input type="file" id="work-file-input" class="hidden-file" accept=".pdf,.hwpx,.txt,.md,.json,.xml,.text,.markdown" />
-
-      <!-- 업무 버튼 -->
-      <div class="work-actions">
-        <button id="btn-work-defect" class="work-btn">📝 기재불비 검토</button>
-        <button id="btn-work-novelty" class="work-btn">🔍 신규성/진보성 검토</button>
-        <button id="btn-work-diagnosis" class="work-btn">🩺 진단 (의견서 평가)</button>
-      </div>
-      <p class="work-hint">기재불비: 명세서만 입력 | 신규성/진보성: A=출원발명, B=비교대상 | 진단: A=출원발명, B=의견제출통지서</p>
-
-      </div>
-      <div id="work-status-dock" class="work-status-dock" aria-live="polite">
-        <div id="work-idle" class="work-idle">
-          위에서 검토를 누르면 진행 상황이 여기에 보여요
+        <div class="code-gen-row patent-actions" aria-label="진단 보고서 다운로드">
+          <button data-patent-format="md" class="btn-small" type="button" disabled>MD</button>
+          <button data-patent-format="txt" class="btn-small" type="button" disabled>TXT</button>
+          <button data-patent-format="json" class="btn-small" type="button" disabled>JSON</button>
+          <button data-patent-format="pdf" class="btn-small" type="button" disabled>PDF</button>
+          <button data-patent-format="hwpx" class="btn-small" type="button" disabled>HWPX</button>
         </div>
-        <div id="work-loading" class="work-loading hidden">
-          <div class="typing-dots"><span></span><span></span><span></span></div>
-          <div class="work-loading-copy">
-            <strong id="work-loading-title">검토 중이에요</strong>
-            <span id="work-loading-time">0초</span>
-          </div>
-          <div class="work-progress"><div id="work-progress-bar" class="work-progress-bar"></div></div>
-        </div>
-        <div id="work-done" class="work-done hidden">
-          <div class="work-done-head">
-            <span class="work-done-icon">✅</span>
-            <span id="work-done-label">검토 완료!</span>
-          </div>
-          <div class="download-formats" role="group" aria-label="결과 다운로드 형식">
-            <button type="button" class="work-btn-download" data-dl-fmt="md">MD</button>
-            <button type="button" class="work-btn-download" data-dl-fmt="txt">TXT</button>
-            <button type="button" class="work-btn-download" data-dl-fmt="json">JSON</button>
-            <button type="button" class="work-btn-download" data-dl-fmt="pdf">PDF</button>
-            <button type="button" class="work-btn-download" data-dl-fmt="hwpx">HWPX</button>
-          </div>
-        </div>
+        <pre id="patent-report" class="patent-report" aria-label="진단 보고서"></pre>
       </div>
     </div>
 
-    <!-- ====== 코딩 모드 패널 ====== -->
     <div id="code-panel" class="code-panel hidden">
       <div class="code-scroll">
-        <div class="code-intro">
-          <strong>⚡ 코딩 모드</strong>
-          <span>만들고 싶은 걸 말하면, 크롬에서 바로 열리는 HTML 미니앱을 만들어 줄게.</span>
-        </div>
-        <label class="code-label" for="code-prompt">만들고 싶은 것</label>
-        <textarea id="code-prompt" class="code-textarea code-prompt" rows="14"
-          placeholder="예: 할 일 목록, 타이머, 메모장, 주사위, 간단한 계산기…"></textarea>
+        <div class="code-intro"><h2>코딩 프로젝트</h2></div>
+        <label class="code-label" for="code-language">언어 (자동 또는 직접 입력)</label>
+        <input id="code-language" class="setting-input" list="code-languages" value="auto" maxlength="60" />
+        <datalist id="code-languages"></datalist>
+        <label class="code-label" for="code-prompt">생성 또는 수정 요청</label>
+        <textarea id="code-prompt" class="code-textarea code-prompt" rows="6" maxlength="100000"></textarea>
         <div class="code-gen-row">
-          <button type="button" id="btn-code-gen" class="code-btn-primary">▶ 만들기</button>
-          <button type="button" id="btn-code-revise" class="code-btn">다듬기</button>
+          <button type="button" id="btn-code-gen" class="code-btn-primary">새 프로젝트</button>
+          <button type="button" id="btn-code-revise" class="code-btn">수정 요청</button>
+          <button type="button" id="btn-code-regen" class="code-btn" disabled>다시 생성</button>
+          <button type="button" id="btn-code-cancel" class="code-btn" disabled>취소</button>
         </div>
-        <label class="code-label" for="code-out">app.html</label>
-        <textarea id="code-out" class="code-textarea code-out" rows="10" spellcheck="false"
-          placeholder="생성된 HTML이 여기에 나타나요…"></textarea>
+        <div id="code-files"></div>
       </div>
-      <div id="code-dock" class="code-dock">
-        <div class="code-dock-status">
-          <strong id="code-status">준비됨</strong>
-          <span id="code-meta">받은 HTML을 크롬에서 열면 버튼이 동작해요</span>
-        </div>
-        <div class="code-dock-actions">
-          <button type="button" id="btn-code-preview" class="code-btn-primary" title="HTML을 받은 뒤 크롬에서 직접 여세요">다운받아 실행</button>
-          <button type="button" id="btn-code-dl" class="code-btn">다운로드</button>
-          <button type="button" id="btn-code-copy" class="code-btn">복사</button>
-        </div>
+      <div class="code-dock">
+        <strong id="code-status" role="status">준비됨</strong>
+        <button type="button" id="btn-code-zip" class="code-btn-primary" disabled>프로젝트 ZIP</button>
       </div>
     </div>
 
@@ -386,6 +358,11 @@
           aria-label="메시지 입력"
         ></textarea>
         <button id="btn-send" class="btn-send" title="전송 (Enter)" aria-label="메시지 전송">💕</button>
+      </div>
+      <div class="chat-code-controls">
+        <label><input type="checkbox" id="chat-code-enabled" /> 코드 요청</label>
+        <input id="chat-code-language" class="setting-input" list="code-languages" value="auto"
+               aria-label="코딩 언어" maxlength="60" hidden />
       </div>
       <div class="input-hint">
         <span>Enter 전송 · 📎 파일(글자만)</span>
@@ -422,6 +399,12 @@
   <script src="companion-behavior.js"></script>
   <script src="companion-controls.js"></script>
   <script src="play-memory-client.js"></script>
+  <script src="coding.js"></script>
+  <script src="kipris.js"></script>
+  <script src="patent-store.js"></script>
+  <script src="patent-diagnosis.js"></script>
+  <script src="coding-panel.js"></script>
+  <script src="patent-panel.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

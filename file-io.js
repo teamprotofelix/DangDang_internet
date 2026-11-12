@@ -242,7 +242,7 @@ const FileIO = {
    * HWPX용 ZIP. mimetype/version.xml 은 저장(store), 나머지는 deflate.
    * entries: [{ name, data: Uint8Array|string, store?: boolean }]
    */
-  async zipPackage(entries) {
+  async zipPackage(entries, mime = 'application/hwp+zip') {
     const enc = new TextEncoder();
     const locals = [];
     const centrals = [];
@@ -260,6 +260,7 @@ const FileIO = {
       const lv = new DataView(local.buffer);
       lv.setUint32(0, 0x04034b50, true);
       lv.setUint16(4, 20, true);
+      lv.setUint16(6, 0x0800, true); // UTF-8 file names
       lv.setUint16(8, method, true);
       lv.setUint32(14, crc, true);
       lv.setUint32(18, payload.length, true);
@@ -274,6 +275,7 @@ const FileIO = {
       cv.setUint32(0, 0x02014b50, true);
       cv.setUint16(4, 20, true);
       cv.setUint16(6, 20, true);
+      cv.setUint16(8, 0x0800, true); // UTF-8 file names
       cv.setUint16(10, method, true);
       cv.setUint32(16, crc, true);
       cv.setUint32(20, payload.length, true);
@@ -294,11 +296,11 @@ const FileIO = {
     ev.setUint32(12, cdSize, true);
     ev.setUint32(16, offset, true);
 
-    return new Blob([...locals, ...centrals, eocd], { type: 'application/hwp+zip' });
+    return new Blob([...locals, ...centrals, eocd], { type: mime });
   },
 
-  zipStore(entries) {
-    return this.zipPackage(entries.map((e) => ({ ...e, store: true })));
+  zipStore(entries, mime) {
+    return this.zipPackage(entries.map((e) => ({ ...e, store: true })), mime);
   },
 
   // ----------------------------------------------------------

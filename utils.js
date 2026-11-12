@@ -78,6 +78,13 @@ function normalizeApiOrigin(apiBase) {
   }
 }
 
+function isExaone(apiConfig) {
+  try {
+    return new URL(apiConfig.apiBase).origin === 'https://api.exaone.ai'
+      && apiConfig.model === 'k-exaone_v2.5';
+  } catch { return false; }
+}
+
 /** 공식 OpenAI Chat Completions 계약만 적용한다. 프리셋 ID/중계 모델명은 근거가 아니다. */
 function isOpenAILuna(apiConfig) {
   if (apiConfig?.model !== 'gpt-6-luna') return false;
@@ -111,6 +118,10 @@ function computeRequestBudget({ apiConfig, messages = [], outputReserveTokens = 
   if (isOpenAILuna(apiConfig)) {
     contextLimit = Math.min(contextLimit, limits.openaiLuna.contextTokens);
     modelMaxOut = Math.min(modelMaxOut, limits.openaiLuna.maxOutputTokens);
+  }
+  if (isExaone(apiConfig)) {
+    contextLimit = Math.min(contextLimit, 524288);
+    modelMaxOut = Math.min(modelMaxOut, contextLimit - 1);
   }
   // 생성 예약에 추론도 포함된다. 추론용 별도 예약을 더하지 않는다.
   const maxOutput = Math.max(256, Math.min(modelMaxOut, outputReserveTokens));
@@ -243,7 +254,6 @@ function decayMood(mood, elapsedMinutes) {
 function isTrustedExtensionUI(sender) {
   if (!sender) return false;
   if (sender.id !== chrome.runtime.id) return false;
-  if (sender.tab) return false; // 콘텐츠 스크립트에서 발신
   const url = String(sender.url || '');
   return url.startsWith(chrome.runtime.getURL(''));
 }

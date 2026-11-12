@@ -1,10 +1,12 @@
 {
   "manifest_version": 3,
+  "minimum_chrome_version": "122",
   "name": "반려 AI",
   "version": "1.9.0",
   "description": "귀여운 반려 AI - 당신의 브라우저 친구",
   "permissions": [
     "sidePanel",
+    "offscreen",
     "storage",
     "alarms",
     "tabs",
@@ -31,6 +33,8 @@
     "https://api.deepseek.com/*",
     "https://llm.moip.go.kr/*",
     "https://api.openai.com/*",
+    "https://api.exaone.ai/*",
+    "https://plus.kipris.or.kr/*",
     "https://openrouter.ai/*",
     "http://localhost/*",
     "http://127.0.0.1/*"

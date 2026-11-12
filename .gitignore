@@ -17,3 +17,6 @@ node_modules/
 
 # Local implementation and browser scratch files
 work/
+
+# Generated local PDF.js assets
+vendor/pdfjs/

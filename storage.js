@@ -240,7 +240,8 @@ class StorageManager {
     const contextMessages = [];
 
     // 1. 시스템 + 페르소나 프롬프트 + 장기 기억 (+ 시간대·기분 문맥 + 신뢰 경계 규칙)
-    const memoryBlock = this.formatMemoryForPrompt(await this.getMemory());
+    const memoryBlock = (await this.getSettings()).sendMemoryToModel
+      ? this.formatMemoryForPrompt(await this.getMemory()) : '';
     const timeContext = await this.buildTimeContext();
     if (systemPrompt || personaPrompt || memoryBlock) {
       contextMessages.push({
@@ -326,7 +327,8 @@ class StorageManager {
   static async computeHistoryBudget(apiConfig, userText, pageSnapshot, maxInputTokens) {
     const sys = await this.get('system_prompt_cache') || '';
     const per = await this.get('persona_prompt_cache') || '';
-    const mem = this.formatMemoryForPrompt(await this.getMemory());
+    const mem = (await this.getSettings()).sendMemoryToModel
+      ? this.formatMemoryForPrompt(await this.getMemory()) : '';
     const page = pageSnapshot && pageSnapshot.text
       ? `[참고 자료]\n제목: ${pageSnapshot.title || ''}\nURL: ${pageSnapshot.url || ''}\n` +
         truncateText(pageSnapshot.text, apiConfig.pageContentMaxChars || CONFIG.context.pageContentMaxChars)
@@ -709,12 +711,7 @@ class StorageManager {
       const systemUrl = chrome.runtime.getURL('prompts/systemprompt.txt');
       const personaUrl = chrome.runtime.getURL('prompts/personaprompt.txt');
 
-      const codeUrl = chrome.runtime.getURL('prompts/codeprompt.txt');
-      const [sysRes, perRes, codeRes] = await Promise.all([
-        fetch(systemUrl),
-        fetch(personaUrl),
-        fetch(codeUrl).catch(() => null)
-      ]);
+      const [sysRes, perRes] = await Promise.all([fetch(systemUrl), fetch(personaUrl)]);
 
       if (sysRes.ok) {
         const text = await sysRes.text();
@@ -723,10 +720,6 @@ class StorageManager {
       if (perRes.ok) {
         const text = await perRes.text();
         await this.set('persona_prompt_cache', text);
-      }
-      if (codeRes && codeRes.ok) {
-        const text = await codeRes.text();
-        await this.set('code_prompt_cache', text);
       }
     } catch (err) {
       console.warn('[반려AI] 프롬프트 파일 캐싱 실패:', err);

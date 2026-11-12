@@ -13,7 +13,12 @@ importScripts(
   'indexeddb-storage.js',
   'storage.js',
   'play-memory.js',
-  'api.js'
+  'api.js',
+  'kipris.js',
+  'patent-store.js',
+  'patent-rules.js',
+  'patent-diagnosis.js',
+  'patent-worker.js'
 );
 
 // The worker is the single writer for the separate local play-memory document.
@@ -44,9 +49,6 @@ function companionReply(text,mood,source,id) {
   return { mood, source, reaction: CompanionPolicy.completion(text,{source,id}), clearReaction:true };
 }
 
-// 실행 중인 업무 요청의 AbortController (runId → controller) — P0-5
-const activeWorkRuns = new Map();
-
 // 페이지 스냅샷 캐시 유효 시간
 const PAGE_SNAPSHOT_TTL_MS = 10 * 60 * 1000;
 
@@ -56,7 +58,8 @@ let pageCollectionGen = 0;
 // storage.local 접근 수준을 신뢰 컨텍스트로 제한 (콘텐츠 스크립트 접근 차단 — P0 리뷰)
 try {
   if (chrome.storage.local?.setAccessLevel) {
-    chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
+    chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' })
+      .catch(() => console.warn('[반려AI] storage.local 접근 수준 설정 실패'));
   }
 } catch (e) {
   console.warn('[반려AI] storage.local 접근 수준 설정 실패:', e.message);
@@ -712,6 +715,7 @@ async function processUserMessage(userText, opts = {}) {
 // ============================================================
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === 'kipris_pdf_parse') return false;
   handleMessage(message, sender).then(sendResponse).catch(err => {
     sendResponse({ type: MSG_ERROR, data: { message: err.message } });
   });
@@ -721,6 +725,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function handleMessage(message, sender) {
   const { type, data } = message;
   const trusted = isTrustedExtensionUI(sender);
+  if (typeof type === 'string' && type.startsWith('kipris_')) {
+    if (!trusted) return { type: 'denied' };
+    try { return await PatentWorker.handle(type, data); }
+    catch (error) {
+      return { error: error instanceof Kipris.Error || error instanceof APIError
+        ? error.message : '특허 서류 작업 중 오류가 발생했습니다.' };
+    }
+  }
   if(['pm_get','pm_control','pm_begin','pm_end','pm_reunion'].includes(type)){
     if(sender?.id!==chrome.runtime.id)return {status:'denied'};
     const content=!!sender.tab;
@@ -733,6 +745,7 @@ async function handleMessage(message, sender) {
 
     // --- 사용자 메시지 (패널) ---
     case MSG_SEND_MESSAGE: {
+      if (!trusted) return { type: 'denied' };
       // 패널 창 기준 대상 탭을 쓰되, 창 정보가 없으면 마지막 포커스 창
       return await processUserMessage(data.text, { windowId: data.windowId ?? null, includePage: true });
     }
@@ -766,6 +779,7 @@ async function handleMessage(message, sender) {
 
     // --- 대화 이력 요청 (패널이 열림 → 기분 배지 해제) ---
     case MSG_GET_HISTORY: {
+      if (!trusted) return { type: 'denied' };
       const messages = await StorageManager.getRecentHistory();
       try {
         await chrome.action.setBadgeText({ text: '' });
@@ -775,6 +789,7 @@ async function handleMessage(message, sender) {
 
     // --- 대화 초기화 ---
     case MSG_CLEAR_HISTORY: {
+      if (!trusted) return { type: 'denied' };
       await StorageManager.clearMessages();
       return { type: 'history_cleared' };
     }
@@ -798,7 +813,7 @@ async function handleMessage(message, sender) {
       if (!trusted) {
         const filtered = {};
         for (const [k, v] of Object.entries(partial)) {
-          if (Object.hasOwn(DEFAULT_SETTINGS,k)) filtered[k] = v;
+          if (k === 'floatingAvatarEnabled' && v === false) filtered[k] = v;
         }
         partial = filtered;
       }
@@ -1001,526 +1016,13 @@ async function handleMessage(message, sender) {
       }
     }
 
-    // --- 업무 모드 취소 (패널) ---
-    case MSG_WORK_CANCEL: {
-      const runId = data?.runId;
-      const controller = runId ? activeWorkRuns.get(runId) : null;
-      if (controller) {
-        controller.abort();
-        await updateWorkRunState(runId, { status: 'cancelled' });
-        broadcastWork({ type: MSG_WORK_ERROR, data: { runId, status: 'cancelled', message: '검토를 취소했어' } });
-      }
-      return { type: 'work_cancel_ack' };
-    }
-
-    // --- 업무 모드 (특허 심사) — P0-4/P0-5 개편 ---
-    case 'work_mode': {
-      if (!trusted) return { type: 'denied' };
-      const runId = data.runId || ('work_' + generateId());
-      return await runWorkPipeline(runId, data.mode, data.textA, data.textB);
-    }
-
     default:
       return { type: 'unknown_message', data: { originalType: type } };
   }
 }
 
 // ============================================================
-// 업무 모드 파이프라인 (P0-4: 분할, P0-5: 상태·runId·취소)
-// ============================================================
-
-async function updateWorkRunState(runId, partial) {
-  const r = await chrome.storage.session.get(CONFIG.storageKeys.workRuns);
-  const runs = (r[CONFIG.storageKeys.workRuns] && typeof r[CONFIG.storageKeys.workRuns] === 'object')
-    ? r[CONFIG.storageKeys.workRuns] : {};
-  runs[runId] = { ...(runs[runId] || {}), ...partial, updatedAt: Date.now() };
-  // 오래된 실행 정리 (2일 초과)
-  const cutoff = Date.now() - 2 * 24 * 3600 * 1000;
-  for (const [id, s] of Object.entries(runs)) {
-    if ((s.updatedAt || s.startedAt || 0) < cutoff) delete runs[id];
-  }
-  await chrome.storage.session.set({ [CONFIG.storageKeys.workRuns]: runs });
-}
-
-function broadcastWork(message) {
-  chrome.runtime.sendMessage(message).catch(() => {});
-}
-
-function workAbortError() {
-  const err = new Error('취소됨');
-  err.name = 'AbortError';
-  return err;
-}
-
-/**
- * 문서를 의미 단위(청구항/절/빈 줄 문단)로 분할 — 원문 식별자 유지 (P0-4)
- */
-function splitWorkDocument(text, maxUnitChars = (CONFIG.work?.unitChars ?? 8000)) {
-  const clean = String(text || '').replace(/\r\n/g, '\n').trim();
-  if (!clean) return { units: [], dropped: 0, total: 0 };
-  const parts = clean.split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
-
-  const units = [];
-  let cur = { label: '', chunks: [] };
-  const flush = () => {
-    if (cur.chunks.length) {
-      units.push({ label: cur.label, text: cur.chunks.join('\n\n') });
-      cur = { label: '', chunks: [] };
-    }
-  };
-  for (const part of parts) {
-    const m = part.match(/^(?:【\s*청구항\s*(\d+)\s*】|\[\s*청구항\s*(\d+)\s*\]|청구항\s*(\d+)[\s.:。)])/);
-    if (m) {
-      flush();
-      cur.label = '청구항 ' + (m[1] || m[2] || m[3]);
-      cur.chunks.push(part);
-      continue;
-    }
-    cur.chunks.push(part);
-    if (cur.chunks.join('\n\n').length > maxUnitChars) flush();
-  }
-  flush();
-
-  // 너무 큰 단위는 문자 단위로 추가 분할 (식별자 유지)
-  const out = [];
-  for (const u of units) {
-    if (u.text.length <= maxUnitChars) {
-      out.push(u);
-      continue;
-    }
-    let rest = u.text;
-    let i = 1;
-    while (rest.length > 0) {
-      out.push({ label: u.label ? `${u.label} (${i}부)` : `문서 (${i}부)`, text: rest.slice(0, maxUnitChars) });
-      rest = rest.slice(maxUnitChars);
-      i++;
-    }
-  }
-  const total = out.length;
-  const kept = out.slice(0, (CONFIG.work?.maxUnits ?? 12));
-  return { units: kept, dropped: Math.max(0, total - kept.length), total };
-}
-
-function buildWorkTaskInstruction(mode, unit, bChunkText, bNote) {
-  const unitLabel = unit.label ? ` — [${unit.label}]` : '';
-  const bSection = bChunkText != null
-    ? `\n\n[비교 대상 문서 (원문 발췌${bNote || ''})]\n${bChunkText}`
-    : '';
-  switch (mode) {
-    case 'defect':
-      return `## 업무: 기재불비 종합 검토${unitLabel}\n` +
-        `아래 [명세서 해당 부분]을 검토하여 특허법 제42조 제4항 제2호(청구범위 명확·간결), ` +
-        `제42조 제4항 제1호(발명의 설명 뒷받침), 제42조 제3항 제1호(실시가능) 기준으로 ` +
-        `기재불비 여부를 판단하십시오. 청구항이 있으면 청구항별로 추출해 분석하세요.\n\n` +
-        `[명세서 해당 부분 — ${unitLabel || '원문 식별자 없음'}]\n${unit.text}`;
-    case 'novelty':
-      return `## 업무: 신규성/진보성 검토${unitLabel}\n` +
-        `아래 [출원발명 해당 부분]을 [비교대상발명]과 대비하여 신규성(특허법 제29조 제1항) 및 ` +
-        `진보성(제29조 제2항) 거절이유가 있는지 검토하십시오.\n` +
-        `청구항의 구성요소와 비교대상발명의 대응 근거(문단·도면 번호)를 연결해 판단하세요.\n\n` +
-        `[출원발명 해당 부분 — ${unitLabel || '원문 식별자 없음'}]\n${unit.text}${bSection}`;
-    case 'diagnosis':
-      return `## 업무: 의견제출통지서 진단${unitLabel}\n` +
-        `[의견제출통지서]가 아래 [출원발명 해당 부분]에 대해 적절하게 작성되었는지 평가하십시오. ` +
-        `거절이유가 법리적으로 타당한지, 빠진 거절이유는 없는지, 논리가 합리적인지 검토하세요.\n\n` +
-        `[출원발명 해당 부분 — ${unitLabel || '원문 식별자 없음'}]\n${unit.text}${bSection}`;
-    default:
-      return `## 업무 검토${unitLabel}\n\n[문서]\n${unit.text}`;
-  }
-}
-
-async function runWorkPipeline(runId, mode, textA, textB) {
-  const controller = new AbortController();
-  activeWorkRuns.set(runId, controller);
-  const startedAt = Date.now();
-  await updateWorkRunState(runId, { status: 'running', mode, startedAt, processed: 0, total: 0 });
-  broadcastWork({ type: MSG_WORK_STARTED, data: { runId, mode, status: 'running' } });
-
-  const modeLabels = {
-    defect: '기재불비 검토',
-    novelty: '신규성/진보성 검토',
-    diagnosis: '의견제출통지서 진단'
-  };
-  const modeLabel = modeLabels[mode] || mode;
-
-  const finalizeRun = async (status, extra) => {
-    await updateWorkRunState(runId, { status, ...extra });
-  };
-
-  try {
-    await ensureSWInitialized();
-    const apiConfig = await StorageManager.getResolvedApiConfig();
-
-    console.log(`[반려AI] 💼 업무 모드 시작 [${runId}]: ${modeLabel}`);
-    console.log(`[반려AI]   입력 A: ${textA?.length || 0}자, 입력 B: ${textB?.length || 0}자`);
-
-    // 시험 프롬프트 로드
-    let examPrompt = '';
-    let rules = '';
-    try {
-      const examUrl = chrome.runtime.getURL('examprompt/examprompt.txt');
-      const rulesUrl = chrome.runtime.getURL('examprompt/rules.txt');
-      const [examRes, rulesRes] = await Promise.all([fetch(examUrl), fetch(rulesUrl)]);
-      if (examRes.ok) examPrompt = await examRes.text();
-      else console.error('[반려AI] ❌ examprompt.txt 로드 실패:', examRes.status);
-      if (rulesRes.ok) rules = await rulesRes.text();
-      else console.error('[반려AI] ❌ rules.txt 로드 실패:', rulesRes.status);
-    } catch (err) {
-      console.error('[반려AI] ❌ 시험 프롬프트 로드 예외:', err.message);
-    }
-
-    if (!examPrompt && !rules) {
-      await finalizeRun('failed', { message: '시험 프롬프트 파일을 불러올 수 없어' });
-      const errResult = { type: MSG_WORK_ERROR, data: { runId, status: 'failed', message: '시험 프롬프트 파일을 불러올 수 없어요. examprompt 폴더를 확인해주세요! (⚠️ examprompt.txt, rules.txt)' } };
-      broadcastWork(errResult);
-      return errResult;
-    }
-
-    const systemPrompt = examPrompt + '\n\n' + rules;
-
-    // 문서 분할 (P0-4)
-    const a = splitWorkDocument(textA);
-    const needB = mode === 'novelty' || mode === 'diagnosis';
-    let bChunks = [];
-    let bExcluded = 0; // P0 리뷰: B 문서에서 제외된 단위 수 추적
-    if (needB && textB) {
-      const bSplit = splitWorkDocument(textB, (CONFIG.work?.unitChars ?? 8000) * 1.5);
-      bChunks = bSplit.units.slice(0, (CONFIG.work?.maxBChunks ?? 4));
-      bExcluded = bSplit.dropped + Math.max(0, bSplit.units.length - bChunks.length);
-      if (bChunks.length === 0 && textB.trim()) {
-        bChunks = [{ label: '', text: textB.trim().slice(0, (CONFIG.work?.unitChars ?? 8000) * 1.5) }];
-        bExcluded = 0; // 단일 조각으로 처리
-      }
-    }
-
-    if (a.units.length === 0) {
-      await finalizeRun('failed', { message: '검토할 문서가 비어 있어' });
-      const errResult = { type: MSG_WORK_ERROR, data: { runId, status: 'failed', message: '검토할 문서 내용이 없어요!' } };
-      broadcastWork(errResult);
-      return errResult;
-    }
-
-    // 출력 예산: 모델 최대 출력과 업무 기본 출력 중 작은 값
-    const outBudget = computeRequestBudget({
-      apiConfig,
-      messages: [],
-      outputReserveTokens: CONFIG.modelLimits.workMaxOutputTokens
-    });
-
-    const findings = [];
-    const warnings = [];
-    let callsMade = 0;
-    let processedUnits = 0;
-    let truncatedAny = false;
-    let bTruncatedAny = false;
-
-    const callUnit = async (unit, bChunk) => {
-      if (controller.signal.aborted) throw workAbortError();
-      if (callsMade >= (CONFIG.work?.maxCalls ?? 25)) return null;
-
-      // B 문서를 넣을 공간 계산: 단위+규칙+지시를 뺀 나머지
-      let bNote = '';
-      let bText = bChunk ? bChunk.text : null;
-      const instr = buildWorkTaskInstruction(mode, unit, bText, bNote);
-      const messages = [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: instr }
-      ];
-      let budget = computeRequestBudget({ apiConfig, messages, outputReserveTokens: outBudget.maxOutput });
-      if (!budget.ok && bText) {
-        // B를 줄여서 공간 확보
-        const usedByRest = estimateTokens(systemPrompt) + estimateTokens(buildWorkTaskInstruction(mode, unit, null, '')) + 24;
-        const availableForB = Math.max(0, budget.maxInputTokens - usedByRest);
-        if (availableForB <= 0) {
-          bText = null;
-          bTruncatedAny = true;
-          warnings.push('비교 문서(B)를 요청 예산에 넣을 수 없어 일부 검토에서 제외했어');
-        } else {
-          const maxChars = Math.floor(availableForB * (CONFIG.context.charsPerTokenEstimate || 4));
-          bText = truncateText(bText, maxChars);
-          bNote = ' — 예산상 일부만 포함';
-          bTruncatedAny = true;
-        }
-        messages[1].content = buildWorkTaskInstruction(mode, unit, bText, bNote);
-        budget = computeRequestBudget({ apiConfig, messages, outputReserveTokens: outBudget.maxOutput });
-      }
-
-      // P0 리뷰: 최종 요청 전체 강제 축소 — 초과 요청을 보내지 않는다
-      const enforced = enforceRequestBudget({ apiConfig, messages, outputReserveTokens: outBudget.maxOutput });
-      if (enforced.trimmed) {
-        truncatedAny = true;
-        warnings.push(`[${unit.label || '본문'}] 입력이 예산을 넘어 일부를 잘라 검토했어`);
-      }
-      if (enforced.trimmed === 'hard') return null; // 시스템 지시 자체가 예산 초과
-      budget = enforced.budget;
-
-      callsMade++;
-      console.log(`[반려AI]   🚀 단위 호출 ${callsMade}/${(CONFIG.work?.maxCalls ?? 25)}: ${unit.label || '본문'} (${enforced.messages[1].content.length}자, maxTokens=${budget.maxOutput})`);
-      const result = await llmClient.chat(enforced.messages, {
-        maxTokens: budget.maxOutput,
-        temperature: 0.3,
-        timeoutMs: CONFIG.work?.timeoutMs ?? 120000,
-        bodyTimeoutMs: CONFIG.work?.bodyTimeoutMs ?? 120000,
-        retries: 0,
-        signal: controller.signal
-      });
-      if (result.truncated) {
-        truncatedAny = true;
-        warnings.push(`[${unit.label || '본문'}] 출력이 잘려 일부 내용이 빠졌을 수 있어`);
-      }
-      return result.content || '';
-    };
-
-    // P0 리뷰 2차: 통합·병합 호출까지 상한에 포함하도록 여유를 남긴 단위 호출 상한
-    const maxUnitCalls = Math.max(1, (CONFIG.work?.maxCalls ?? 25) - 2);
-    const plannedPerUnit = (!needB || bChunks.length === 0) ? 1 : bChunks.length;
-    let comparisonsTotal = a.units.length * plannedPerUnit; // 시작 전에 전체 계획 집계
-    let comparisonsDone = 0;
-
-    // A 단위 순회 (B가 있으면 단위×B조각, 호출 상한 내)
-    for (const unit of a.units) {
-      if (controller.signal.aborted) throw workAbortError();
-      if (callsMade >= maxUnitCalls) break;
-      let done = 0;
-      const pieces = [];
-      if (!needB || bChunks.length === 0) {
-        const content = await callUnit(unit, null);
-        if (content !== null) {
-          done = 1;
-          pieces.push(content);
-        }
-      } else {
-        for (const bChunk of bChunks) {
-          if (callsMade >= maxUnitCalls) break;
-          const content = await callUnit(unit, bChunk);
-          if (content === null) break;
-          done++;
-          pieces.push(content);
-        }
-      }
-      comparisonsDone += done;
-      if (done > 0) {
-        // P0 리뷰 2차: A×B 비교별 처리 상태 기록 — 일부 비교 누락 시 partial
-        if (done < plannedPerUnit) {
-          warnings.push(`호출 상한 때문에 [${unit.label || '본문'}]의 비교 ${plannedPerUnit - done}건이 미처리됐어`);
-        }
-        findings.push({
-          label: unit.label,
-          text: pieces.join(`\n\n--- [비교 문서 ${done > 1 ? '조각별 검토' : '검토'} 이어서] ---\n\n`)
-        });
-        processedUnits++;
-      }
-      await updateWorkRunState(runId, { processed: processedUnits, total: a.units.length });
-    }
-
-    const unprocessed = a.units.length - processedUnits;
-    const comparisonsMissed = comparisonsTotal - comparisonsDone;
-    if (unprocessed > 0) {
-      warnings.push(`호출 상한 때문에 ${unprocessed}개 단위가 미처리됐어 — 처리 범위: 앞 ${processedUnits}개 단위`);
-    }
-    if (comparisonsMissed > 0) {
-      warnings.push(`호출 상한 때문에 비교 ${comparisonsMissed}건(전체 ${comparisonsTotal}건)이 미처리됐어`);
-    }
-    if (a.dropped > 0) {
-      warnings.push(`문서가 너무 커서 뒤쪽 ${a.dropped}개 단위는 검토 범위에서 제외됐어`);
-    }
-    // P0 리뷰: B 문서 제외 범위를 경고 + partial로 표시
-    if (bExcluded > 0) {
-      warnings.push(`비교 문서(B)가 너무 커서 뒤쪽 ${bExcluded}개 단위는 검토에서 제외됐어 — B 근거 일부가 반영되지 않음`);
-    }
-
-    // 통합 (여러 단위일 때) — 근거 유지하며 합성 (P0 리뷰: 예산 기반 동적 캡 + 분할 통합)
-    let content;
-    if (findings.length === 0) {
-      await finalizeRun('failed', { message: '검토 결과가 없어' });
-      const errResult = { type: MSG_WORK_ERROR, data: { runId, status: 'failed', message: 'AI가 검토 결과를 생성하지 못했어요. 모델 설정이나 API 키를 확인해주세요!' } };
-      broadcastWork(errResult);
-      return errResult;
-    } else if (findings.length === 1 && !needB) {
-      content = findings[0].text;
-    } else {
-      if (controller.signal.aborted) throw workAbortError();
-
-      const instrBase =
-        `아래는 ${modeLabel}를 의미 단위로 나눠 검토한 결과들입니다. ` +
-        `각 결과의 청구항/문단 식별자와 근거를 유지한 채 하나의 종합 검토 보고서로 통합하세요. ` +
-        `누락된 검토 범위가 있으면 "검토 범위" 섹션에 처리·미처리 범위를 명시하세요.`;
-
-      // P0 리뷰 2차: 절단 전 전체 예산 검사. 전체가 들어가면 원문 그대로 통합하고,
-      // 초과할 때만 분할 통합한다 (입력을 먼저 잘라 성공시키지 않는다).
-      const synthCall = async (subset, label) => {
-        if (controller.signal.aborted) throw workAbortError();
-        if (callsMade >= (CONFIG.work?.maxCalls ?? 25)) return { hard: true, content: null };
-        const parts = subset.map((f) => `### [${f.label || '본문'}] 검토 결과\n${f.text}`).join('\n\n');
-        const msgs = [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: `${instrBase}\n\n${label}\n\n` + parts }
-        ];
-        const en = enforceRequestBudget({ apiConfig, messages: msgs, outputReserveTokens: outBudget.maxOutput });
-        if (en.trimmed === 'hard') return { hard: true, content: null };
-        callsMade++;
-        const r = await llmClient.chat(en.messages, {
-          maxTokens: en.budget.maxOutput,
-          temperature: 0.3,
-          timeoutMs: CONFIG.work?.timeoutMs ?? 120000,
-          bodyTimeoutMs: CONFIG.work?.bodyTimeoutMs ?? 120000,
-          retries: 0,
-          signal: controller.signal
-        });
-        if (en.trimmed) {
-          truncatedAny = true;
-          warnings.push(`[${label || '종합'}] 입력이 예산을 넘어 일부 검토 결과를 잘랐어`);
-        }
-        if (r.truncated) {
-          truncatedAny = true;
-          warnings.push('종합 단계 출력이 잘려 일부 내용이 빠졌을 수 있어');
-        }
-        return { hard: false, trimmed: !!en.trimmed || r.truncated, content: r.content || en.messages[1].content };
-      };
-
-      const rawJoin = (subset) => subset
-        .map((f) => `### [${f.label || '본문'}] 검토 결과\n${truncateText(f.text, 4000)}`)
-        .join('\n\n');
-
-      const synthRecursive = async (subset, label) => {
-        if (controller.signal.aborted) throw workAbortError();
-        // P0 리뷰 3차: 빈 조각·단일 조각은 재귀 종료 (더 이상 분할하지 않음)
-        if (!subset.length) return { content: '(검토 결과 없음)', trimmed: false };
-        if (callsMade >= (CONFIG.work?.maxCalls ?? 25)) {
-          truncatedAny = true;
-          warnings.push('통합 호출 상한에 도달해 검토 결과를 원문 조각으로 제공했어');
-          return { content: rawJoin(subset), trimmed: true };
-        }
-        const res = await synthCall(subset, label);
-        if (!res.trimmed && !res.hard) {
-          return { content: res.content, trimmed: false };
-        }
-        if (subset.length === 1) {
-          // 단일 조각: 더 분할할 수 없음 — 잘린 내용을 그대로 제공하고 종료
-          if (res.hard) {
-            truncatedAny = true;
-            warnings.push(`[${subset[0].label || '본문'}] 통합 호출이 예산을 넘어 원문으로 제공했어`);
-            return { content: rawJoin(subset), trimmed: true };
-          }
-          return { content: res.content, trimmed: true }; // enforce가 남긴 마커 포함본
-        }
-        // 초과(또는 호출 상한) → 실제 분할 통합
-        const half = Math.ceil(subset.length / 2);
-        const aRes = await synthRecursive(subset.slice(0, half), (label ? label + ' · ' : '') + '그룹 A');
-        const bRes = await synthRecursive(subset.slice(half), (label ? label + ' · ' : '') + '그룹 B');
-        const mergeInput =
-          `아래는 ${modeLabel} 검토 결과를 두 그룹으로 나눠 통합한 중간 보고서들입니다. ` +
-          `근거와 청구항 식별자를 유지하며 하나의 최종 보고서로 병합하세요.\n\n` +
-          `## 그룹 A 통합\n${aRes.content}\n\n## 그룹 B 통합\n${bRes.content}`;
-        if (callsMade >= (CONFIG.work?.maxCalls ?? 25)) {
-          truncatedAny = true;
-          warnings.push('병합 호출 상한에 도달해 그룹별 통합 결과를 이어서 제공했어');
-          return { content: mergeInput, trimmed: true };
-        }
-        const mergeEn = enforceRequestBudget({
-          apiConfig,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: mergeInput }
-          ],
-          outputReserveTokens: outBudget.maxOutput
-        });
-        if (mergeEn.trimmed === 'hard') {
-          truncatedAny = true;
-          warnings.push('병합 단계 입력이 예산을 넘어 그룹별 결과를 이어서 제공했어');
-          return { content: mergeInput, trimmed: true };
-        }
-        if (mergeEn.trimmed) {
-          truncatedAny = true;
-          warnings.push('병합 단계 입력이 예산을 넘어 일부를 잘랐어');
-        }
-        callsMade++;
-        const merged = await llmClient.chat(mergeEn.messages, {
-          maxTokens: mergeEn.budget.maxOutput,
-          temperature: 0.3,
-          timeoutMs: CONFIG.work?.timeoutMs ?? 120000,
-          bodyTimeoutMs: CONFIG.work?.bodyTimeoutMs ?? 120000,
-          retries: 0,
-          signal: controller.signal
-        });
-        if (merged.truncated) {
-          truncatedAny = true;
-          warnings.push('병합 단계 출력이 잘려 일부 내용이 빠졌을 수 있어');
-        }
-        return {
-          content: merged.content || mergeInput,
-          trimmed: aRes.trimmed || bRes.trimmed || !!mergeEn.trimmed || merged.truncated
-        };
-      };
-
-      const synthResult = await synthRecursive(findings, '');
-      content = synthResult.content;
-    }
-
-    // 미처리 범위 고지 (P0-4: 잘라서 완전 검토로 표시 금지)
-    if (warnings.length) {
-      content += `\n\n## 검토 범위 및 주의\n${warnings.map((w) => `- ⚠️ ${w}`).join('\n')}`;
-    }
-
-    const status = (truncatedAny || bTruncatedAny || unprocessed > 0 || a.dropped > 0 || bExcluded > 0 || comparisonsMissed > 0) ? 'partial' : 'succeeded';
-    // P1 리뷰: 결과 본문을 상태와 함께 저장 — 패널 재열기에서 복원 가능
-    await finalizeRun(status, {
-      processed: processedUnits,
-      total: a.units.length,
-      resultLength: content.length,
-      result: {
-        mode,
-        content,
-        status,
-        processed: processedUnits,
-        total: a.units.length,
-        warnings,
-        finishedAt: Date.now()
-      }
-    });
-
-    const workResult = {
-      type: MSG_WORK_RESULT,
-      data: {
-        runId,
-        mode,
-        content,
-        status,
-        processed: processedUnits,
-        total: a.units.length,
-        warnings
-      }
-    };
-    broadcastWork(workResult);
-    console.log(`[반려AI] ✅ 업무 모드 완료 [${runId}]: ${status} (${content.length}자, 호출 ${callsMade}회)`);
-    return workResult;
-
-  } catch (err) {
-    let status = 'failed';
-    let message;
-    if (controller.signal.aborted || err.name === 'AbortError') {
-      status = 'cancelled';
-      message = '검토를 취소했어';
-    } else if (err instanceof APIError && err.statusCode === 408) {
-      status = 'timed_out';
-      message = '요청 시간이 초과되었어요. 문서를 더 작게 나눠 다시 시도해볼까요?';
-    } else if (err instanceof APIError) {
-      message = err.getUserMessage();
-    } else {
-      message = '업무 처리 중 오류가 발생했어요... (´•ω•̥`)';
-    }
-    console.error(`[반려AI] ❌ 업무 모드 오류 [${runId}]:`, status, err.statusCode || err.name);
-    await finalizeRun(status, { message });
-    const errResult = { type: MSG_WORK_ERROR, data: { runId, status, message } };
-    broadcastWork(errResult);
-    return errResult;
-  } finally {
-    activeWorkRuns.delete(runId);
-  }
-}
-
-// ============================================================
-// 컨텍스트 메뉴 핸들러 — 우클릭 "댕댕이에게 전달"
+// 컨텍스트 메뉴
 // ============================================================
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {

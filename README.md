@@ -1,26 +1,39 @@
 # DangDang_internet
 
-This project starts as an independent, public **Chrome Manifest V3 extension** based on an earlier private companion-AI project. The previous Git history is intentionally not included.
+브라우저에서 대화하고 함께 놀 수 있는 Chrome Manifest V3 반려 AI입니다. 사이드 패널과 플로팅 아바타, 로컬 대화 이력과 기억, 범용 코딩 프로젝트, KIPRIS PLUS 특허 심사품질 진단을 지원합니다.
 
-## Features
-- Conversational LLM clients using configurable OpenAI-compatible API endpoints
-- Side panel and floating companion with moods, animation, and play actions
-- Page awareness, local history, PDF/HWPX document utilities, optional work mode
+## 로컬 설치
 
-## Install locally
-1. Open `chrome://extensions` in Chrome.
-2. Enable **Developer mode**.
-3. Choose **Load unpacked** and select the folder containing `manifest.json`.
-4. Open the extension's settings and configure the LLM provider and **your own** API key.
+1. Chrome 122 이상과 Node.js 24를 준비합니다.
+2. 저장소를 내려받고 `manifest.json`이 있는 폴더에서 `npm ci --omit=dev --omit=optional`을 실행합니다. 설치 시 로컬 PDF.js 파일이 준비됩니다.
+3. Chrome에서 `chrome://extensions`를 열고 **개발자 모드 → 압축해제된 확장 프로그램을 로드합니다**를 선택한 뒤 해당 폴더를 지정합니다.
+4. 확장 프로그램을 열고 **설정**에서 제공자와 API 키를 입력한 뒤 저장합니다. **연결 테스트**에서 실제 모델 응답을 확인할 수 있습니다.
 
-## Security
-- No API keys or credentials are shipped with this source snapshot.
-- Do not put keys, personal data, private tests, or internal screenshots in commits.
-- Browser page content can be sent to an external LLM depending on the extension settings. Check privacy controls before enabling page awareness.
-- This is the initial source import, **not** a new feature-complete internet release; endpoint defaults and permissions should be reviewed before distribution to end users.
+## 대화와 코딩
 
-## Contributing
-Fork this repository, create a feature branch, and open a pull request. Do not include credentials, generated screenshots with personal data, or private files.
+- 대화창에서 **코드 요청**을 켜고 보냅니다. 언어는 `auto`로 감지하거나 목록에 없는 이름을 직접 입력할 수 있습니다. 이후 메시지도 같은 프로젝트 파일을 참고해 수정합니다. 코드 요청을 끄면 일반 대화로 돌아갑니다.
+- **코딩** 탭의 **새 프로젝트**는 빈 상태에서 시작하고 **수정 요청**은 현재 파일을 사용합니다. 개별 소스는 복사하거나 저장할 수 있으며, 프로젝트 ZIP은 하위 폴더와 UTF-8 파일명을 보존합니다. 파일명과 확장자는 코딩 탭에서 편집할 수 있습니다.
+- 모델이 반환한 소스는 텍스트로 표시합니다. 다운로드한 파일의 내용은 직접 확인한 뒤 별도 환경에서 사용하세요. 이전 HTML 세션은 `app.html`로 복원됩니다.
+- **LG EXAONE (K-EXAONE 2.5)**는 `k-exaone_v2.5`를 사용합니다. 제공자마다 키가 분리되며 생성 한도에는 추론 토큰이 포함됩니다. 서비스 혼잡 시 429가 표시될 수 있습니다. [EXAONE API 문서](https://docs.exaone.ai/ko/docs/k-exaone-2.5)
 
-## License
-MIT. See `LICENSE` for original copyright and license terms.
+## 특허 심사품질 진단
+
+1. **설정 → KIPRIS PLUS**에 본인의 키를 저장합니다. 상품 권한이 있는 출원번호로 연결을 검사합니다.
+2. **특허 진단**에 13자리 특허·실용신안 출원번호를 입력하고 **서류 조회·다운로드**를 누릅니다. 문서별 확보 상태와 원문 열기·저장, 원문 ZIP을 사용할 수 있습니다. 자동 경로가 확인되지 않은 자료는 해당 행에서 PDF를 첨부합니다.
+3. **진단 시작**을 누르면 전송할 LLM 주소와 모델이 표시됩니다. 동의 후 누락된 자료 조회를 시도하고 확보한 원문으로 검토합니다. 전송에 동의하지 않아도 조회와 다운로드를 이용할 수 있습니다.
+4. 보고서는 문서별 상태, OA·RD·RC 규칙, 통지 당시 청구항 판본, 근거 쪽수와 미검토 범위를 보여줍니다. MD·TXT·JSON·PDF·HWPX로 저장할 수 있습니다. **이 출원 자료 삭제**로 로컬 기록과 원문을 지웁니다.
+
+### 원문과 판정 범위
+
+- 행정처리 이력과 상품별 PDF 응답의 문서번호를 맞추고, 원문을 내려받아 페이지와 첫 쪽 식별자를 확인합니다. 스캔본·일부 텍스트 누락·식별자 불일치는 문서별로 표시합니다. OCR과 자동 정정공고 수집은 현재 범위에 없습니다.
+- 변동 이력을 접수번호·일자로 대조해 통지 전 청구항을 복원합니다. 같은 날의 선후가 불명확하거나 원문을 확보하지 못한 판정은 보류합니다. 등록청구항은 등록공보와 대조합니다.
+- 규칙별 LLM 결과는 원문에 존재하는 인용을 확인한 후 보조 판단으로 표시합니다. 공식 진단코드의 자동 확정과 외부 원문 없이는 판단할 수 없는 실체 결론은 보류합니다. 보정서·의견서·인용발명은 확인된 자동 제공 경로가 없어 수동 첨부를 사용합니다.
+- 각 상품은 별도의 이용 권한이 필요할 수 있습니다. 원문을 외부 LLM으로 전송하기 전에 이용 조건과 전송 권한을 확인하세요. [KIPRIS PLUS 상품 목록](https://plus.kipris.or.kr/portal/data/apiClas/List.do) · [원문 이용 안내](https://plus.kipris.or.kr/portal/bbs/Faq_info.do?buttonIndex=&pageIndex=9)
+
+## 개인정보와 검증
+
+- 기본 설정은 웹 콘텐츠 인식과 기억 메모의 모델 전송을 끕니다. 일반 대화 전송 시 입력과 대화 맥락은 선택한 모델에 전송됩니다.
+- KIPRIS PLUS 키는 LLM 키와 별도 로컬 저장소에 보관합니다. 일반 대화 내보내기에 키와 특허 진단 기록을 포함하지 않습니다.
+- `npm ci && npm test`로 합성 자료 기반 테스트를 실행합니다. Chromium 통합 검증은 `npx playwright install chromium` 후 `npm run test:browser`로 실행합니다. 사용자의 실제 키나 문서는 테스트에 필요하지 않습니다.
+
+MIT 라이선스입니다. [LICENSE](LICENSE)

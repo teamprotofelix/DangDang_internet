@@ -36,7 +36,7 @@ class FloatingAvatarController {
     // 배포 기본값은 전부 OFF — 설정 메시지가 도착하면 그 값으로 갱신 (config.js와 동일)
     this.floatingAvatarEnabled = false;
     this.speechBubblesEnabled = false;
-    this.contentAwarenessEnabled = true; // 웹 인식 ON/OFF — OFF면 수집·전송 안 함 (P0-1)
+    this.contentAwarenessEnabled = false; // 웹 인식 ON/OFF — OFF면 수집·전송 안 함 (P0-1)
     this.wanderIntervalMin = 60;
     this.wanderIntervalMax = 180;
     this.lastUserActivity = 0;
