@@ -69,7 +69,7 @@ const PatentDiagnosis = (() => {
       { role: 'system', content: system },
       { role: 'user', content: JSON.stringify({
         target: task.target.id, rules: task.rules, version: task.version,
-        documents: evidence.map(({ id, title, date, pages }) => ({ id, title, date, pages }))
+        documents: evidence.map(({ id, title, kind, date, pages }) => ({ id, title, kind, date, pages }))
       }) }
     ];
   }
@@ -158,7 +158,9 @@ const PatentDiagnosis = (() => {
         }
         for (const [rule] of focused.rules) {
           const row = rows.find(item => item.rule === rule);
-          if (!fragment) findings.push(row || notChecked(task.target.id, rule, reason));
+          const missing = rule === 'OA-07' && reason === '검증 가능한 규칙별 응답 또는 원문 인용이 없음'
+            ? '검증 가능한 OA-07 응답 또는 인용발명 원문의 대조 근거가 없음' : reason;
+          if (!fragment) findings.push(row || notChecked(task.target.id, rule, missing));
           else if (row?.level === '조건부 점검') findings.push({ ...row, fragment: true });
         }
       }

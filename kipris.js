@@ -297,7 +297,11 @@ const Kipris = (() => {
 
   async function registeredClaims(app, key, signal) {
     return allRecords(gazette + 'patentClaimInfo', app, key, signal, root =>
-      nodes(root, 'claim').map(row => row.text.trim() || value(row, 'claimText')).filter(Boolean));
+      nodes(root, 'claim').map(row => ({
+        number: value(row, 'claimNumber')
+          || row.parent.children.find(field => field.name === 'claimnumber')?.text.trim() || null,
+        text: row.text.trim() || value(row, 'claimText')
+      })));
   }
 
   async function download(path, signal) {

@@ -58,27 +58,34 @@ class CodingPanel {
     await this.run(text, this.chatLanguage.value, true, output);
   }
 
-  regenerate(output) {
-    const last = this.session.last;
-    if (!last) { this.status.textContent = '다시 생성할 요청이 없습니다.'; return; }
-    return this.run(last.prompt, last.language, last.revise, output, last.base);
+  regenerate(output = null, request = this.session.last) {
+    if (!request) { this.status.textContent = '다시 생성할 요청이 없습니다.'; return; }
+    return this.run(request.prompt, request.language, request.revise, output, request);
   }
 
-  async run(rawPrompt, rawLanguage, revise, chatOutput = null, regenerationBase = null) {
+  async run(rawPrompt, rawLanguage, revise, chatOutput = null, retry = null) {
     await this.ready;
     if (this.controller) return;
     const prompt = rawPrompt.trim();
     const language = rawLanguage.trim().slice(0, 60) || 'auto';
+    const updateProject = !retry || retry === this.session.last;
+    let chatStatus = chatOutput?.querySelector('.code-chat-status');
+    if (chatOutput && !chatStatus) {
+      chatStatus = document.createElement('div');
+      chatStatus.className = 'code-chat-status';
+      chatOutput.append(chatStatus);
+    }
     const write = message => {
-      this.status.textContent = message;
-      if (chatOutput) chatOutput.textContent = message;
+      if (updateProject) this.status.textContent = message;
+      if (chatStatus) chatStatus.textContent = message;
     };
     if (!prompt) { write('무엇을 만들지 입력해 주세요.'); return; }
     const controller = new AbortController();
     this.controller = controller;
     const cancel = document.getElementById('btn-code-cancel');
-    const old = this.session.files;
-    const base = regenerationBase || (revise ? old : []);
+    const base = retry?.base ?? (revise ? this.session.files.map(file => ({ ...file })) : []);
+    const request = { prompt, language, revise, base };
+    let stop;
     try {
       const config = await StorageManager.getResolvedApiConfig();
       if (!hasApiReady(config)) { write('설정에서 모델과 API 키를 입력해 주세요.'); return; }
@@ -86,12 +93,12 @@ class CodingPanel {
       cancel.disabled = false;
       write('코드를 생성하고 있습니다…');
       if (chatOutput) {
-        const stop = document.createElement('button');
+        stop = document.createElement('button');
         stop.type = 'button';
         stop.className = 'btn-small';
         stop.textContent = '생성 취소';
         stop.onclick = () => controller.abort();
-        chatOutput.append(' ', stop);
+        chatStatus.after(stop);
       }
       const response = await fetch(chrome.runtime.getURL('prompts/codeprompt.txt'), { signal: controller.signal });
       if (!response.ok) throw new Error('코딩 지침을 불러오지 못했습니다.');
@@ -112,20 +119,23 @@ class CodingPanel {
       if (unchanged.some(file => result.files.some(change => CodeProjects.pathsConflict(file.name, change.name)))) {
         throw new Error('새 파일 경로가 기존 파일 또는 폴더 이름과 충돌합니다.');
       }
-      this.session = { version: 2, prompt, language, files: [...unchanged, ...result.files],
-        last: { prompt, language, revise, base } };
-      this.prompt.value = prompt;
-      this.language.value = this.chatLanguage.value = language;
-      await this.save();
-      this.render();
-      write(`${this.session.files.length}개 파일을 준비했습니다.`);
+      const files = [...unchanged, ...result.files];
+      if (updateProject) {
+        this.session = { version: 2, prompt, language, files, last: request };
+        this.prompt.value = prompt;
+        this.language.value = this.chatLanguage.value = language;
+        await this.save();
+        this.render();
+      }
+      write(`${files.length}개 파일을 준비했습니다.`);
       if (chatOutput) {
+        chatOutput.replaceChildren(chatStatus);
         for (const file of result.files) chatOutput.append(this.fileCard(file, false));
         const actions = document.createElement('div');
         actions.className = 'code-gen-row';
-        actions.append(this.button('프로젝트 ZIP', () => this.downloadZip()),
+        actions.append(this.button('프로젝트 ZIP', () => this.downloadZip(files)),
           this.button('수정 요청', () => this.panel.messageInput.focus()),
-          this.button('다시 생성', () => this.regenerate(chatOutput)));
+          this.button('다시 생성', () => this.regenerate(chatOutput, request)));
         chatOutput.append(actions);
         this.panel.scrollToBottom();
       }
@@ -139,6 +149,7 @@ class CodingPanel {
         chatOutput.append(pre);
       }
     } finally {
+      stop?.remove();
       this.controller = null;
       cancel.disabled = true;
       this.panel.behaviorController?.setBusy('code', false);
@@ -185,7 +196,7 @@ class CodingPanel {
           this.status.textContent = '안전하고 중복되지 않는 파일명을 입력해 주세요.';
           return;
         }
-        file.name = safe;
+        this.session.files = this.session.files.map(item => item === file ? { ...file, name: safe } : item);
         await this.save();
         this.render();
       }));
@@ -199,9 +210,9 @@ class CodingPanel {
     return card;
   }
 
-  async downloadZip() {
-    if (!this.session.files.length) return;
-    const entries = this.session.files.map(file => ({ name: file.name, data: file.content }));
+  async downloadZip(files = this.session.files) {
+    if (!files.length) return;
+    const entries = files.map(file => ({ name: file.name, data: file.content }));
     FileIO.downloadBlob(await FileIO.zipStore(entries, 'application/zip'), 'dangdang-project.zip');
   }
 }

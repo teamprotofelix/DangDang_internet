@@ -8,7 +8,7 @@ const PatentRules = (() => {
       ['04', '본문과 첨부 목록의 실제 문헌 번호 및 역할을 대조'],
       ['05', '명확성 지적이 단순 표현 선호인지 청구항의 해석에 영향을 주는지 확인', 'claims'],
       ['06', '이유마다 대상, 근거, 논증과 결론이 연결되는지 확인'],
-      ['07', '제조방법으로 특정한 물건 청구항과 인용문헌의 물건 및 제조 경로를 비교', 'external'],
+      ['07', '제조방법으로 특정한 물건 청구항과 인용문헌의 물건 및 제조 경로를 비교. 통지서와 검증된 인용발명 원문에서 각각 대조 근거를 인용', 'external'],
       ['08', '실시 가능성과 청구항 명확성의 근거 및 해당 조문이 일치하는지 확인', 'external'],
       ['09', '의약용도 청구항의 질병 및 약리 효과 특정 여부를 검토', 'external'],
       ['10', '물건의 종류를 택일한 문언이 청구항의 기재 방식에 미치는 영향을 검토', 'claims'],
@@ -96,29 +96,60 @@ const PatentRules = (() => {
   }
 
   function verifyRegisteredClaims(raw, gazette, rows) {
-    if (!raw?.length || gazette?.status !== 'verified') return failure('등록공보와 청구항 API가 모두 필요함');
+    if (!Array.isArray(raw) || !raw.length || gazette?.status !== 'verified') return failure('등록공보와 청구항 API가 모두 필요함');
     if (rows.some(row => row.kind === 'CORRECTION' || row.kind === 'RD')) return failure('정정 또는 거절·등록 경과의 기준 시점 확인 필요');
     const full = gazette.pages.map(page => page.text).join('\n');
-    const marker = full.search(/청\s*구\s*항\s*1(?!\d)/);
     const count = Number(full.match(/(?:전체|총)\s*청구항\s*(?:수\s*[:：]?)?\s*(?:총\s*)?(\d+)\s*항?/)?.[1]);
     const registeredAt = full.match(/(?:\(24\)\s*)?등\s*록\s*일\s*자\s*[:：]?\s*(\d{4}\s*년\s*\d{1,2}\s*월\s*\d{1,2}\s*일|\d{4}[.-]\d{2}[.-]\d{2})/)?.[1];
     const registration = full.match(/(?:\(11\)\s*)?등\s*록\s*번\s*호\s*[:：]?\s*(\d{2}[-\s]*\d{7})/)?.[1];
-    if (!count || count !== raw.length || marker < 0 || !registeredAt || !registration) {
+    if (!count || count !== raw.length || !registeredAt || !registration) {
       return failure('등록번호·일자·청구항 수를 공보에서 교차 확인하지 못함');
     }
-    const excerpt = full.slice(marker);
-    const boundaries = [...excerpt.matchAll(/청\s*구\s*항\s*(\d+)(?!\d)/g)];
-    const claims = [];
-    for (let index = 0; index < raw.length; index++) {
-      const text = raw[index].replace(/^\s*(?:청구항\s*\d+\s*[:：]?|제\s*\d+\s*항\s*[:：])\s*/, '').trim();
-      const normalized = compact(text);
-      const at = boundaries.findIndex(entry => compact(excerpt.slice(entry.index + entry[0].length)).startsWith(normalized));
-      if (!normalized || at < 0 || claims.some(claim => claim.id === Number(boundaries[at][1]))) {
-        return failure('청구항 텍스트와 등록공보 문언이 일치하지 않음');
+
+    const comparable = text => text.normalize('NFC').replace(/\s/g, '');
+    const contents = gazette.pages.map(page => {
+      const lines = page.text.trim().split(/\r?\n/);
+      if (comparable(lines[0]) === '등록특허' + comparable(registration)) lines.shift();
+      if (lines.length && comparable(lines.at(-1)) === '-' + page.page + '-') lines.pop();
+      return lines.join('\n');
+    }).join('\n');
+    const claimHeading = /^[\t ]*청[\t ]*구[\t ]*항[\t ]*(\d+)(?=[\t :：\r\n]|$)[\t ]*[:：]?[\t ]*/gm;
+    const first = claimHeading.exec(contents);
+    if (!first) return failure('등록공보의 청구항 경계를 식별하지 못함');
+    const excerpt = contents.slice(first.index)
+      .split(/^[\t ]*(?:\[[\t ]*)?(?:발명의[\t ]*설명|도면|서열목록)(?:[\t ]*\])?[\t ]*\r?$/m, 1)[0];
+    claimHeading.lastIndex = 0;
+    const boundaries = [...excerpt.matchAll(claimHeading)];
+    const gazetteClaims = new Map();
+    for (const [index, heading] of boundaries.entries()) {
+      const id = Number(heading[1]);
+      const text = excerpt.slice(heading.index + heading[0].length, boundaries[index + 1]?.index);
+      if (!Number.isSafeInteger(id) || id < 1 || gazetteClaims.has(id) || !comparable(text)) {
+        return failure('등록공보의 청구항 번호 또는 전문을 식별하지 못함');
       }
-      claims.push({ id: Number(boundaries[at][1]), text, references: claimReferences(text) });
+      gazetteClaims.set(id, comparable(text));
     }
-    return { status: 'verified', registration, registeredAt, claims: claims.sort((a, b) => a.id - b), reason: '' };
+    if (gazetteClaims.size !== count) return failure('등록공보의 청구항 번호 또는 전문을 식별하지 못함');
+
+    const claims = new Map();
+    for (const [index, entry] of raw.entries()) {
+      const rawText = typeof entry === 'string' ? entry : entry?.text;
+      if (typeof rawText !== 'string') return failure('청구항 API의 전문을 식별하지 못함');
+      const number = typeof entry === 'object' ? entry?.number : null;
+      // A claim's body can itself begin with a reference such as "청구항 1".
+      const matchesWithoutLabel = gazetteClaims.get(Number(number ?? index + 1)) === comparable(rawText);
+      const label = matchesWithoutLabel ? null
+        : rawText.match(/^\s*(?:청\s*구\s*항\s*(\d+)(?=\s|[:：]|$)\s*[:：]?|제\s*(\d+)\s*항\s*[:：])\s*/);
+      const labelNumber = label ? Number(label[1] || label[2]) : null;
+      const id = Number(number ?? labelNumber ?? index + 1);
+      const text = rawText.slice(label?.[0].length ?? 0).trim();
+      if ((labelNumber !== null && id !== labelNumber) || claims.has(id)
+        || !comparable(text) || gazetteClaims.get(id) !== comparable(text)) {
+        return failure('청구항 번호별 API 전문과 등록공보 문언이 일치하지 않음');
+      }
+      claims.set(id, { id, text, references: claimReferences(text) });
+    }
+    return { status: 'verified', registration, registeredAt, claims: [...claims.values()].sort((a, b) => a.id - b), reason: '' };
   }
 
   function registeredFindings(target, version) {
@@ -156,6 +187,9 @@ const PatentRules = (() => {
         && evidence.some(document => document.id === ref.document
           && document.pages.some(page => page.page === ref.page && compact(page.text).includes(compact(ref.quote)))));
       if (item.level !== '확인 불가' && (!refs.length || !refs.some(ref => ref.document === target))) continue;
+      if (item.level !== '확인 불가' && rule === 'OA-07'
+        && !evidence.some(doc => doc.id !== target && doc.kind === 'CITATION' && doc.status === 'verified'
+          && refs.some(ref => ref.document === doc.id))) continue;
       if (item.level !== '확인 불가' && ['RD-01', 'RD-02', 'RD-03', 'RD-05'].includes(rule)
         && !refs.some(ref => ref.document !== target)) continue;
       rows.push({ rule, target, level: item.level, code: null, evidence: refs,

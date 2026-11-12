@@ -64,10 +64,13 @@ async function main() {
       const body = route.request().postDataJSON();
       assert.equal(route.request().headers().authorization, 'Bearer fixture-exaone');
       const ordinary = body.messages.at(-1).content === '일반 대화 회귀';
+      const coding = body.messages.length > 1 && /existingFiles/.test(body.messages[1].content)
+        ? JSON.parse(body.messages[1].content) : null;
       const content = ordinary ? JSON.stringify({ mood: 'smile', message: '대화 응답 확인' })
         : body.messages[0].role === 'user' ? 'OK'
+        : coding?.request === '두 번째 파일을 추가해 주세요' ? 'File: second.py\n```python\nprint("second")\n```'
         : 'File: main.py\n```python\nprint("안녕")\n```\nFile: README.md\n```markdown\n사용법\n```';
-      if (body.messages.length > 1 && /existingFiles/.test(body.messages[1].content)) browserCode.push(body.messages[1].content);
+      if (coding && !body.stream) browserCode.push(coding);
       return route.fulfill({ json: { choices: [{ message: { content }, finish_reason: 'stop' }] } });
     });
     await page.goto('chrome-extension://' + id + '/sidepanel.html');
@@ -99,11 +102,38 @@ async function main() {
     await page.fill('#message-input', 'Python으로 수정해 주세요');
     await page.click('#btn-send');
     await page.waitForFunction(() => document.querySelectorAll('.code-chat-project code').length === 2);
-    assert.match(browserCode[0], /이전 세션/);
+    const firstRequest = browserCode[0];
+    assert.match(firstRequest.existingFiles[0].content, /이전 세션/);
+    await page.fill('#chat-code-language', 'python');
+    await page.fill('#message-input', '두 번째 파일을 추가해 주세요');
+    await page.click('#btn-send');
+    await page.waitForFunction(() => document.querySelectorAll('.code-chat-project code').length === 3);
+    const messages = page.locator('.code-chat-project');
+    const downloadNames = async button => {
+      const download = page.waitForEvent('download');
+      await button.click();
+      const file = await download;
+      assert.equal(file.suggestedFilename(), 'dangdang-project.zip');
+      const data = (await readFile(await file.path())).toString('base64');
+      return page.evaluate(async encoded => {
+        const bytes = Uint8Array.from(atob(encoded), char => char.charCodeAt(0));
+        const contents = await FileIO.unzip(bytes.buffer);
+        return Object.keys(contents).filter(name => !name.startsWith('__bin__:')).sort();
+      }, data);
+    };
+    const firstZip = messages.first().getByRole('button', { name: '프로젝트 ZIP' });
+    const secondZip = messages.nth(1).getByRole('button', { name: '프로젝트 ZIP' });
+    assert.deepEqual(await downloadNames(firstZip), ['README.md', 'app.html', 'main.py']);
+    assert.deepEqual(await downloadNames(secondZip), ['README.md', 'app.html', 'main.py', 'second.py']);
+    const regenerated = page.waitForRequest(request => request.url() === 'https://api.exaone.ai/v1/chat/completions'
+      && request.postDataJSON()?.stream === false);
+    await messages.first().getByRole('button', { name: '다시 생성' }).click();
+    await regenerated;
+    await messages.first().getByText('3개 파일을 준비했습니다.').waitFor();
+    assert.deepEqual(browserCode.at(-1), firstRequest);
+    assert.deepEqual(await downloadNames(firstZip), ['README.md', 'app.html', 'main.py']);
     await page.click('#btn-mode-code');
-    const zip = page.waitForEvent('download');
-    await page.click('#btn-code-zip');
-    assert.equal((await zip).suggestedFilename(), 'dangdang-project.zip');
+    assert.deepEqual(await downloadNames(page.locator('#btn-code-zip')), ['README.md', 'app.html', 'main.py', 'second.py']);
 
     console.log('Coding project downloaded');
     await page.click('#btn-mode-work');

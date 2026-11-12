@@ -294,6 +294,88 @@ test('등록공보·청구항 텍스트 교차 확인 및 종속항 번호 점�
   assert.equal(PatentRules.verifyRegisteredClaims(['장치 전문', '제3항의 장치 전문'], reg, [{ kind: 'CORRECTION' }]).status, 'unavailable');
 });
 
+test('등록공보는 청구항 번호별 전문을 대조하며 접두사·번호 뒤바뀜·다음 항 혼입을 거부', () => {
+  const { PatentRules } = testRuntime();
+  const reg = { id: 'REG', status: 'verified', pages: [
+    { page: 1, text: '등록번호 10-9999999\n등록일자 2099.01.05\n전체 청구항 수 : 총 2 항\n청구항 1\n장치 전문\n청구항 2\n제1항의 장치로서\n- 1 -' },
+    { page: 2, text: '등록특허 10-9999999\n센서를 포함하는 장치\n[발명의 설명]\n명세서의 상세한 본문\n- 2 -' }
+  ] };
+  const first = '장치 전문';
+  const second = '제1항의 장치로서 센서를 포함하는 장치';
+  const verify = api => PatentRules.verifyRegisteredClaims(api, reg, []).status;
+  assert.equal(verify([first, '제1항의 장치']), 'unavailable');
+  assert.equal(verify([second, first]), 'unavailable');
+  assert.equal(verify([first + ' 청구항 2 ' + second, second]), 'unavailable');
+  assert.equal(verify(['청구항 1: ' + second, '청구항 2: ' + first]), 'unavailable');
+  assert.equal(verify([{ number: '1', text: '청구항 2: ' + first }, second]), 'unavailable');
+  assert.equal(verify([first, second]), 'verified');
+  assert.equal(verify([{ number: '2', text: second }, { number: '1', text: first }]), 'verified');
+});
+
+test('등록청구항 API 파싱은 제공된 번호와 빈 전문을 보존', async () => {
+  const { Kipris } = testRuntime(async () => new Response(xml(
+    '<claimInfo><claimNumber>2</claimNumber><claim>제1항의 장치</claim></claimInfo>'
+    + '<claimInfo><claim><claimNumber>1</claimNumber><claimText>장치 전문</claimText></claim></claimInfo>'
+    + '<claimInfo><claim>번호 없는 장치</claim></claimInfo>'
+    + '<claimInfo><claimNumber>4</claimNumber><claim/></claimInfo>'
+  )));
+  const rows = await Kipris.registeredClaims(app, 'fixture-kipris', new AbortController().signal);
+  assert.deepEqual(plain(rows), [
+    { number: '2', text: '제1항의 장치' }, { number: '1', text: '장치 전문' },
+    { number: null, text: '번호 없는 장치' }, { number: '4', text: '' }
+  ]);
+});
+
+test('OA-07 판단은 통지서 및 검증된 인용발명 원문의 실제 인용을 각각 요구', () => {
+  const { PatentRules } = testRuntime();
+  const notice = { id: 'oa', kind: 'OA', pages: [{ page: 1, text: '통지서의 제조방법 기재' }] };
+  const filing = { id: 'app', kind: 'APP', status: 'verified', pages: [{ page: 1, text: '출원 명세서의 제조방법 기재' }] };
+  const citation = { id: 'cited', kind: 'CITATION', status: 'verified', pages: [{ page: 3, text: '인용발명 원문의 결과물 기재' }] };
+  const noticeRef = { document: notice.id, page: 1, quote: notice.pages[0].text };
+  const filingRef = { document: filing.id, page: 1, quote: filing.pages[0].text };
+  const citationRef = { document: citation.id, page: 3, quote: citation.pages[0].text };
+  const read = (level, evidence, source = citation) => PatentRules.readFindings(JSON.stringify([{
+    rule: 'OA-07', level, evidence, comparison: '비교', analysis: '분석', verdict: '판정'
+  }]), [['OA-07']], [notice, filing, source], notice.id);
+  for (const level of ['검토한 규칙에서 발견되지 않음', '조건부 점검']) {
+    assert.equal(read(level, [noticeRef]).length, 0);
+    assert.equal(read(level, [noticeRef, filingRef]).length, 0);
+    assert.equal(read(level, [noticeRef, { ...citationRef, page: 1 }]).length, 0);
+    assert.equal(read(level, [noticeRef, citationRef], { ...citation, status: 'pdf_text' }).length, 0);
+    assert.equal(read(level, [citationRef]).length, 0);
+    assert.equal(read(level, [noticeRef, citationRef])[0].level, level);
+  }
+  assert.equal(read('확인 불가', [noticeRef])[0].level, '확인 불가');
+});
+
+test('OA-07은 인용발명 파일을 제공해도 대조 인용이 빠진 응답을 보고서에서 보류', async () => {
+  const filing = { id: 'app', kind: 'APP', title: '특허출원서', date: '20990101',
+    status: 'verified', identityVerified: true, pages: [{ page: 1, text: '출원 명세서의 제조방법 기재' }] };
+  const notice = { id: 'oa', kind: 'OA', title: '의견제출통지서', date: '20990102',
+    status: 'verified', identityVerified: true, pages: [{ page: 1, text: '통지서의 제조방법 기재' }] };
+  const cited = { id: 'cited', kind: 'CITATION', title: '인용발명', citedBy: [notice.id],
+    status: 'verified', identityVerified: true, pages: [{ page: 3, text: '인용발명 원문의 결과물 기재' }] };
+  const event = { serial: '1', id: filing.id, date: filing.date, title: filing.title };
+  const record = { application: app, docs: [filing, notice, cited], historyStatus: 'complete',
+    collectionStatus: 'complete', claimStatus: 'complete',
+    claimHistory: { events: [event], changes: [{ ...event, claim: '1', change: '신규', text: '제조방법으로 특정한 장치' }] } };
+  let requested = false;
+  const { PatentDiagnosis } = testRuntime(async (_, options) => {
+    const input = JSON.parse(JSON.parse(options.body).messages[1].content);
+    const checksOA07 = input.rules.some(([rule]) => rule === 'OA-07');
+    if (checksOA07) requested = input.documents.some(doc => doc.id === cited.id && doc.kind === 'CITATION');
+    const findings = checksOA07 ? [{ rule: 'OA-07', level: '검토한 규칙에서 발견되지 않음',
+      evidence: [{ document: notice.id, page: 1, quote: notice.pages[0].text }],
+      comparison: '비교', analysis: '분석', verdict: '판정' }] : [];
+    return Response.json({ choices: [{ message: { content: JSON.stringify(findings) }, finish_reason: 'stop' }] });
+  });
+  const report = await PatentDiagnosis.evaluate(record, exa, new AbortController().signal, async () => {});
+  assert.equal(requested, true);
+  const result = report.findings.find(row => row.rule === 'OA-07');
+  assert.equal(result.level, '확인 불가');
+  assert.match(result.verdict, /인용발명 원문/);
+});
+
 test('부분 진단은 빠진 선행 통지와 잘못된 모델 인용을 확정하지 않음', () => {
   const { PatentDiagnosis, PatentRules } = testRuntime();
   const target = { id: 'rd', title: '거절결정서', date: '20990102', kind: 'RD',
