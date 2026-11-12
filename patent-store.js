@@ -29,12 +29,14 @@ const PatentStore = (() => {
     get: id => operation('readonly', store => store.get(id)),
     save: record => operation('readwrite', store => store.put(record, record.application)),
     file: (app, id) => operation('readonly', store => store.get([app, id]), 'files'),
-    async saveWithFile(record, id, bytes) {
+    async saveWithFile(record, id, bytes, removeIds = []) {
       const db = await open();
       await new Promise((resolve, reject) => {
         const transaction = db.transaction(['cases', 'files'], 'readwrite');
         transaction.objectStore('cases').put(record, record.application);
-        transaction.objectStore('files').put(bytes, [record.application, id]);
+        const files = transaction.objectStore('files');
+        for (const removeId of removeIds) files.delete([record.application, removeId]);
+        if (id !== null) files.put(bytes, [record.application, id]);
         transaction.oncomplete = resolve;
         transaction.onabort = () => reject(transaction.error);
       });

@@ -10,6 +10,9 @@ const pubNumbers = ['1099990000011', '1099990000012'];
 const pubPdfs = pubNumbers.map(number => testPdf(['공개특허공보', '출원번호 ' + app, '공개번호 ' + number]));
 const opinionId = '119999000000001';
 const opinionPdf = testPdf(['의견서', '출원번호 ' + app, '접수번호 ' + opinionId, '2099.01.03']);
+const rotatingApp = '1099990000002';
+const rotatingNumber = '1099990000013';
+const rotatingPdf = testPdf(['공개특허공보', '출원번호 ' + rotatingApp, '공개번호 ' + rotatingNumber]);
 
 async function main() {
   const profile = await mkdtemp(path.join(os.tmpdir(), 'dangdang-chromium-'));
@@ -29,9 +32,9 @@ async function main() {
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     page.on('dialog', dialog => dialog.dismiss());
-    await worker.evaluate(({ app, send, date, pdf, pubNumbers, pubPdfs, opinionId }) => {
+    await worker.evaluate(({ app, send, date, pdf, pubNumbers, pubPdfs, opinionId, rotatingApp, rotatingPdf }) => {
       const fetchOriginal = globalThis.fetch;
-      globalThis.fixtureRequests = { kipris: 0, model: 0, pdf: 0 };
+      globalThis.fixtureRequests = { kipris: 0, model: 0, pdf: 0, rotating: 0 };
       const createOffscreen = chrome.offscreen.createDocument.bind(chrome.offscreen);
       globalThis.fixtureParserUnavailable = true;
       let gazetteLookups = 0;
@@ -53,6 +56,15 @@ async function main() {
           + body + '</body></response>', { headers: { 'content-type': 'application/xml' } });
         if (url.hostname === 'plus.kipris.or.kr') {
           globalThis.fixtureRequests.kipris++;
+          if (url.searchParams.get('applicationNumber') === rotatingApp) {
+            if (!url.pathname.includes('getPubFullTextInfoSearch')) return response('<items/>');
+            const ticket = ++globalThis.fixtureRequests.rotating;
+            return response('<items><item><docName>공개전문</docName><path>https://plus.kipris.or.kr/rotating.pdf?ticket='
+              + ticket + '</path></item></items>');
+          }
+          if (url.pathname === '/rotating.pdf') {
+            return url.searchParams.get('ticket') === '1' ? new Response(null, { status: 410 }) : new Response(rotatingPdf);
+          }
           if (url.pathname.includes('relatedDocsonfileInfo')) return response('<items><item><applicationNumber>'
             + app + '</applicationNumber><documentNumber>' + send + '</documentNumber><documentDate>'
             + date + '</documentDate><documentTitle>의견제출통지서</documentTitle></item>'
@@ -94,7 +106,7 @@ async function main() {
         settings: { onboardingDismissed: true },
         code_session: { prompt: '레거시', html: '<p>이전 세션</p>' }
       });
-    }, { app, send, date, pdf: testPdf(), pubNumbers, pubPdfs, opinionId });
+    }, { app, send, date, pdf: testPdf(), pubNumbers, pubPdfs, opinionId, rotatingApp, rotatingPdf });
     const browserCode = [];
     await page.route('https://api.exaone.ai/v1/chat/completions', async route => {
       const body = route.request().postDataJSON();
@@ -250,6 +262,53 @@ async function main() {
     assert.equal(await worker.evaluate(() => globalThis.fixtureRequests.kipris), beforeRetry);
     await page.click('#patent-delete');
     await opinion.waitFor({ state: 'detached' });
+
+    await worker.evaluate(() => chrome.storage.local.set({ [CONFIG.storageKeys.kiprisKey]: 'fixture-kipris' }));
+    await page.fill('#patent-application', rotatingApp);
+    await page.click('#patent-lookup');
+    const rotating = page.getByRole('row').filter({ hasText: '공개공보' });
+    await rotating.getByText('PDF 다운로드 경로가 만료됐거나 서버에서 찾을 수 없음').waitFor();
+    await rotating.getByRole('button', { name: '원문 다시 조회', exact: true }).click();
+    await rotating.getByText('공보 식별자가 일치하는 경로가 없음', { exact: false }).waitFor();
+    const oldId = await worker.evaluate(async app => (await PatentStore.get(app)).docs[0].id, rotatingApp);
+    await page.click('#patent-lookup');
+    await page.waitForFunction(() => document.querySelector('#patent-status').textContent === '조회 완료');
+    assert.equal(await rotating.count(), 1);
+    const recovered = await worker.evaluate(async app => {
+      const record = await PatentStore.get(app);
+      return { id: record.docs[0].id, number: record.docs[0].gazetteNumber, state: record.collectionStatus };
+    }, rotatingApp);
+    assert.notEqual(recovered.id, oldId);
+    assert.equal(recovered.number, rotatingNumber);
+    assert.equal(recovered.state, 'complete');
+    await worker.evaluate(async app => {
+      const record = await PatentStore.get(app);
+      record.queriedAt = new Date(0).toISOString();
+      await PatentStore.save(record);
+    }, rotatingApp);
+    await page.click('#patent-lookup');
+    await page.waitForFunction(async app => {
+      const record = await PatentStore.get(app);
+      return record?.state === 'complete' && Date.parse(record.queriedAt) > 0
+        && document.querySelector('#patent-status').textContent === '조회 완료';
+    }, rotatingApp);
+    assert.equal(await rotating.count(), 1);
+    const finalGazette = await worker.evaluate(async app => {
+      const record = await PatentStore.get(app);
+      const doc = record.docs[0];
+      const fileIds = await new Promise((resolve, reject) => {
+        const open = indexedDB.open('dangdang-patent-diagnosis');
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const db = open.result;
+          const request = db.transaction('files').objectStore('files').getAllKeys(IDBKeyRange.bound([app], [app, []]));
+          request.onsuccess = () => { db.close(); resolve(request.result.map(([, id]) => id)); };
+          request.onerror = () => { db.close(); reject(request.error); };
+        };
+      });
+      return { id: doc.id, state: record.collectionStatus, ticket: globalThis.fixtureRequests.rotating, fileIds };
+    }, rotatingApp);
+    assert.deepEqual(finalGazette, { id: recovered.id, state: 'complete', ticket: 4, fileIds: [recovered.id] });
     assert.deepEqual(errors, []);
     console.log('Chromium extension smoke passed: legacy migration, settings, code ZIP, PDF extraction, consent, diagnosis, restore, delete.');
   } finally {

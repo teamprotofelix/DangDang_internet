@@ -45,13 +45,47 @@ const PatentWorker = (() => {
       registeredClaimStatus: 'pending', collectionStatus: 'pending' };
   }
 
+  function verifiedGazette(doc) {
+    return Kipris.isGazette(doc.kind) && doc.hasFile && doc.status === 'verified' && doc.identityVerified && doc.gazetteNumber;
+  }
+
+  async function saveReconciledGazettes(record, docs, report, inspected) {
+    const key = doc => doc.kind + ':' + doc.gazetteNumber;
+    const kept = new Map();
+    for (const doc of docs) {
+      if (!verifiedGazette(doc)) continue;
+      const existing = kept.get(key(doc));
+      if (!existing || (doc.source === '수동 첨부' && (doc === inspected || existing.source !== '수동 첨부'))) {
+        kept.set(key(doc), doc);
+      }
+    }
+    const removed = docs.filter(doc => {
+      const survivor = kept.get(key(doc));
+      return survivor && survivor !== doc && (verifiedGazette(doc) || !doc.hasFile);
+    });
+    const removeIds = new Set(removed.map(doc => doc.id));
+    const current = inspected && verifiedGazette(inspected) && kept.get(key(inspected));
+    const reconciled = docs.filter(doc => !removeIds.has(doc.id)).map(doc =>
+      doc === current && inspected.gazetteLocator && doc.gazetteLocator !== inspected.gazetteLocator
+        ? { ...doc, gazetteLocator: inspected.gazetteLocator }
+        : doc);
+    const checkpoint = { ...record, report: removeIds.size ? null : report, docs: reconciled };
+    if (removeIds.size) await PatentStore.saveWithFile(checkpoint, null, null, [...removeIds]);
+    else await PatentStore.save(checkpoint);
+    record.docs = reconciled;
+    record.report = checkpoint.report;
+  }
+
   async function inspectStoredPdf(record, doc, bytes) {
     const inspection = await Kipris.inspectPdf(bytes, record.application, doc, extract);
     const updated = { ...doc, ...inspection };
     const report = doc.status === inspection.status ? record.report : null;
-    const checkpoint = { ...record, report, docs: record.docs.map(item => item === doc ? updated : item) };
-    await PatentStore.save(checkpoint);
-    record.report = report;
+    const docs = record.docs.map(item => item === doc ? updated : item);
+    if (Kipris.isGazette(doc.kind)) await saveReconciledGazettes(record, docs, report, updated);
+    else {
+      await PatentStore.save({ ...record, report, docs });
+      record.report = report;
+    }
     Object.assign(doc, inspection);
   }
 
@@ -163,6 +197,7 @@ const PatentWorker = (() => {
     }
 
     bindLegacyGazettes(record);
+    await saveReconciledGazettes(record, record.docs, record.report);
     for (const kind of ['PUB', 'REG']) {
       const stored = record.docs.filter(doc => doc.kind === kind);
       const target = onlyId && stored.find(doc => doc.id === onlyId && !doc.hasFile);
@@ -184,8 +219,8 @@ const PatentWorker = (() => {
           await fetchDocument(target, match.path);
         } else target.status = lookupError || 'gazette_unmatched';
       } else if (candidates.length) {
-        record.docs = record.docs.filter(doc => doc.kind !== kind || doc.hasFile || doc.gazetteNumber || doc.gazetteLocator);
         const visited = new Set();
+        let allVerified = true;
         for (const location of candidates) {
           let doc = record.docs.find(item => item.kind === kind && matches(item, location));
           if (!doc) {
@@ -198,6 +233,14 @@ const PatentWorker = (() => {
           visited.add(doc.id);
           doc.gazetteNumber ||= location.gazetteNumber;
           if (!doc.hasFile) await fetchDocument(doc, location.path);
+          if (!verifiedGazette(doc)) allVerified = false;
+        }
+        if (!lookupError && candidates.length === locations.length && allVerified) {
+          const current = record.docs.filter(doc => doc.kind !== kind || doc.hasFile || doc.gazetteNumber || visited.has(doc.id));
+          if (current.length !== record.docs.length) {
+            record.docs = current;
+            record.report = null;
+          }
         }
       } else {
         const doc = stored.find(item => item.id === kind) || { id: kind, kind, title, date: '' };
