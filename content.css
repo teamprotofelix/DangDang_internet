@@ -1,0 +1,286 @@
+/* ============================================================ */
+/* content.css — Content Script용 Shadow DOM 스타일               */
+/* 웹페이지에 주입되는 플로팅 AI + 말풍선 스타일              */
+/* Shadow DOM 내에서 완전히 격리됨 (호스트 페이지 영향 없음)       */
+/* ============================================================ */
+
+/* --- 호스트 컨테이너 --- */
+:host {
+  all: initial;
+  display: block;
+  position: fixed;
+  z-index: 2147483646;
+  pointer-events: none;
+  font-family: 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
+}
+
+/* --- 래퍼 (포인터 이벤트 활성화) --- */
+.ha-wrapper {
+  pointer-events: auto;
+  position: fixed;
+  transition: transform 0.05s linear;
+  user-select: none;
+}
+
+/* --- 아바타 이미지 --- */
+.ha-avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  cursor: grab;
+  background: #FFF5F7;
+  border: 2.5px solid #FFB5C2;
+  box-shadow: 0 3px 16px rgba(93, 64, 55, 0.18);
+  object-fit: cover;
+  transition: box-shadow 0.3s ease, border-color 0.4s ease;
+  display: block;
+  image-rendering: auto;
+}
+
+.ha-avatar:hover {
+  box-shadow: 0 4px 24px rgba(255, 181, 194, 0.35);
+}
+
+.ha-avatar:active {
+  cursor: grabbing;
+}
+
+/* 숨기기 버튼 */
+.ha-hide {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: none;
+  background: #F5E0E0;
+  color: #8D6E63;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.2s ease, background 0.15s ease;
+  padding: 0;
+  z-index: 2;
+}
+
+.ha-wrapper:hover .ha-hide {
+  opacity: 1;
+}
+
+/* --- 1단계 생명체화: 호버·누름 반응 (숨쉬기는 ha-idle의 haBreathe) --- */
+.ha-wrapper {
+  transition: transform 0.25s ease;
+}
+.ha-wrapper:hover {
+  transform: scale(1.07) rotate(-3deg);
+}
+.ha-wrapper:has(.ha-avatar:active) {
+  transform: scale(0.9);
+}
+
+.ha-hide:hover {
+  background: #FFCDD2;
+  color: #C62828;
+}
+
+/* User attention feedback belongs to the stable input container, never a second image. */
+.ha-avatar.ha-attention { animation: haAttention 1.2s ease; }
+@keyframes haAttention { 0%,100% { transform: scale(1); } 35% { transform: scale(1.12); } }
+
+/* --- 말풍선 --- */
+.ha-bubble {
+  position: absolute;
+  background: #FFFFFF;
+  border-radius: 18px;
+  padding: 10px 14px;
+  max-width: min(240px, 70vw);
+  min-width: 60px;
+  box-shadow: 0 3px 20px rgba(0, 0, 0, 0.13);
+  font-size: 13px;
+  line-height: 1.55;
+  color: #5D4037;
+  word-break: keep-all;
+  animation: haBubbleIn 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+  border: 1px solid #F5E0E0;
+}
+
+.ha-bubble-above {
+  bottom: 72px;
+  top: auto;
+}
+.ha-bubble-below {
+  top: 72px;
+  bottom: auto;
+}
+.ha-bubble-right {
+  right: -8px;
+  left: auto;
+}
+.ha-bubble-left {
+  left: -8px;
+  right: auto;
+}
+
+/* 말풍선 꼬리 */
+.ha-bubble::after {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  background: #FFFFFF;
+  border-right: 1px solid #F5E0E0;
+  border-bottom: 1px solid #F5E0E0;
+}
+
+.ha-bubble-above::after {
+  bottom: -7px;
+  transform: rotate(45deg);
+}
+.ha-bubble-below::after {
+  top: -7px;
+  transform: rotate(225deg);
+}
+.ha-bubble-right::after {
+  right: 18px;
+  left: auto;
+}
+.ha-bubble-left::after {
+  left: 18px;
+  right: auto;
+}
+
+@keyframes haBubbleIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* 말풍선 닫기 버튼 */
+.ha-bubble-close {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: none;
+  background: #F5E0E0;
+  color: #8D6E63;
+  font-size: 11px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  line-height: 1;
+  padding: 0;
+}
+
+.ha-bubble:hover .ha-bubble-close {
+  opacity: 1;
+}
+
+/* 툴팁 */
+.ha-tooltip {
+  position: absolute;
+  top: -30px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(93, 64, 55, 0.85);
+  color: white;
+  padding: 4px 10px;
+  border-radius: 10px;
+  font-size: 11px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+}
+
+.ha-wrapper:hover .ha-tooltip {
+  opacity: 1;
+}
+
+/* 말풍선 페이드 아웃 */
+.ha-bubble.fading {
+  animation: haBubbleOut 0.4s ease forwards;
+}
+
+@keyframes haBubbleOut {
+  to {
+    opacity: 0;
+    transform: translateY(6px) scale(0.95);
+  }
+}
+
+/* --- 다크모드 웹사이트 대응 --- */
+@media (prefers-color-scheme: dark) {
+  .ha-bubble {
+    background: #FFF5F7;
+    color: #5D4037;
+    border-color: #FFE4E9;
+    box-shadow: 0 3px 20px rgba(0, 0, 0, 0.3);
+  }
+  .ha-bubble::after {
+    background: #FFF5F7;
+    border-color: #FFE4E9;
+  }
+}
+
+.ha-wrapper.ha-theme-dark .ha-avatar {
+  background: #2A2426;
+  border-color: #E89AA8;
+}
+.ha-wrapper.ha-theme-dark .ha-bubble,
+.ha-wrapper.ha-theme-dark .ha-bubble::after {
+  background: #2A2426;
+  color: #F5E9E6;
+  border-color: #4A3E40;
+}
+.ha-wrapper.ha-theme-dark .ha-bubble {
+  box-shadow: 0 3px 20px rgba(0, 0, 0, 0.45);
+}
+.ha-wrapper.ha-theme-dark .ha-hide {
+  background: #4A3E40;
+  color: #F5E9E6;
+}
+
+/* Canvas is the single visual child. Hit testing belongs to .ha-avatar. */
+.companion-canvas { display: block; pointer-events: none; }
+.companion-canvas[hidden] { display: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  .ha-avatar, .ha-wrapper, .ha-bubble { animation: none !important; transition: none !important; }
+  .ha-wrapper:hover, .ha-wrapper:has(.ha-avatar:active) { transform: none; }
+}
+/* Explicit pet button is a sibling of the input target; the bubble is outside this wrapper. */
+.ha-pet { display:block; margin:4px auto 0; width:36px; height:28px; padding:0; border:1px solid #E8A5B4; border-radius:14px; background:#FFF5F7; cursor:pointer; font-size:17px; }
+.ha-pet:focus-visible { outline:2px solid #9C709C; outline-offset:2px; }
+.ha-bubble { position:fixed; margin:0; left:0; top:0; animation:none; transition:none; pointer-events:none; box-sizing:border-box; max-width:min(240px,calc(100vw - 8px)); }
+.ha-bubble::after { display:none; }
+
+.ha-interact-actions { display:flex; gap:4px; align-items:center; justify-content:center; margin-top:4px; }
+.ha-interact-actions .ha-pet { margin:0; }
+.ha-play-toggle { width:28px; height:28px; padding:0; border:1px solid #dca5b4; border-radius:12px; background:#fff5f7; color:#654550; font-size:20px; cursor:pointer; }
+.ha-play-toggle:focus-visible,.companion-controls button:focus-visible { outline:2px solid #8a5888; outline-offset:2px; }
+.ha-play-menu { position:fixed; pointer-events:auto; width:170px; max-width:calc(100vw - 8px); max-height:calc(100vh - 12px); overflow:auto; padding:8px; box-sizing:border-box; background:#fff5f7; color:#654550; border:1px solid #dca5b4; border-radius:12px; box-shadow:0 3px 12px #40303930; }
+.ha-play-menu[hidden] { display:none!important; }
+.companion-controls { display:flex; flex-wrap:wrap; gap:4px; justify-content:center; }
+.companion-controls button { min-height:32px; flex:1 1 44%; padding:4px 6px; border:1px solid #dca5b4; border-radius:8px; background:#fff; color:inherit; font:13px system-ui; cursor:pointer; }
+.companion-controls button:disabled { opacity:.55; cursor:default; }
+.companion-command-status { width:100%; font:12px/1.4 system-ui; text-align:center; }
+.companion-ball { display:block; pointer-events:none; object-fit:contain; }
+
+.ha-command-announce { position:fixed; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; pointer-events:none; }
+
+.companion-controls [data-suggested] { outline:2px solid #b0a0ce; outline-offset:1px; }

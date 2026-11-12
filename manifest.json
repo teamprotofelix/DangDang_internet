@@ -1,0 +1,94 @@
+{
+  "manifest_version": 3,
+  "name": "반려 AI",
+  "version": "1.9.0",
+  "description": "귀여운 반려 AI - 당신의 브라우저 친구",
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "alarms",
+    "tabs",
+    "activeTab",
+    "contextMenus",
+    "unlimitedStorage",
+    "notifications"
+  ],
+  "commands": {
+    "open-panel": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Y"
+      },
+      "description": "댕댕이 대화 열기"
+    },
+    "toggle-avatar": {
+      "suggested_key": {
+        "default": "Alt+Shift+A"
+      },
+      "description": "플로팅 아바타 켜기/끄기"
+    }
+  },
+  "host_permissions": [
+    "https://api.deepseek.com/*",
+    "https://llm.moip.go.kr/*",
+    "https://api.openai.com/*",
+    "https://openrouter.ai/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "config.js",
+        "utils.js",
+        "messages.js",
+        "moods.js",
+        "companion-policy.js",
+        "play-memory.js",
+        "companion-assets.js",
+        "companion-player.js",
+        "companion-behavior.js",
+        "companion-controls.js",
+        "play-memory-client.js",
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "반려 AI 열기 💕",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "content.css",
+        "assets/runtime/emotions/*",
+        "assets/runtime/play/*"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}

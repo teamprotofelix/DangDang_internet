@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="pastel">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <title>반려 AI - 댕댕이</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+
+    <!-- ====== 헤더 ====== -->
+    <header id="header">
+      <div class="header-left">
+        <div id="avatar-container">
+          <div id="avatar-img" class="companion-viewport" role="img" aria-label="댕댕이 표정"></div>
+          <div id="mood-badge" class="mood-badge" aria-hidden="true">😶</div>
+        </div>
+        <div class="header-info">
+          <h1 id="avatar-name">댕댕이</h1>
+          <p id="mood-label">기본</p>
+        </div>
+      </div>
+      <div class="mode-switch" role="tablist" aria-label="화면 전환">
+        <button type="button" id="btn-mode-chat" class="mode-switch-btn active" role="tab" aria-selected="true">💬 대화</button>
+        <button type="button" id="btn-mode-work" class="mode-switch-btn" role="tab" aria-selected="false">💼 업무</button>
+        <button type="button" id="btn-mode-code" class="mode-switch-btn" role="tab" aria-selected="false">⚡ 코딩</button>
+      </div>
+      <div class="header-actions">
+        <button id="btn-toggle-theme" class="icon-btn" title="다크 모드로 전환" aria-label="다크 모드로 전환">🌙</button>
+        <button id="btn-toggle-avatar" class="icon-btn" title="플로팅 아바타 켜기/끄기" aria-label="플로팅 아바타 켜기 또는 끄기">🎀</button>
+        <button id="btn-settings" class="icon-btn" title="설정" aria-label="설정 열기">⚙️</button>
+        <button id="btn-clear" class="icon-btn" title="대화 초기화" aria-label="대화 초기화">🗑️</button>
+      </div>
+    </header>
+
+    <!-- ====== 포즈 아바타 디스플레이 ====== -->
+    <div id="pose-display" class="pose-display">
+      <button id="btn-pose-actions" class="pose-actions-toggle" type="button" aria-label="댕댕이 교감 메뉴" aria-expanded="false" aria-controls="pose-actions-popover" title="쓰다듬기와 놀이">
+        <span aria-hidden="true">🐾</span><span>교감</span><span aria-hidden="true">⌄</span>
+      </button>
+      <div id="pose-actions-popover" class="pose-actions-popover" role="group" aria-label="댕댕이와 함께 놀기" hidden>
+        <p class="pose-actions-heading">함께 놀까요?</p>
+        <div class="pose-interaction-row"><button type="button" id="btn-pet" class="pose-pet-button" aria-label="댕댕이 쓰다듬기">🐾 쓰다듬기</button></div>
+      </div>
+      <div class="pose-stage">
+        <div id="pose-avatar" class="companion-viewport" role="img" aria-label="댕댕이 포즈"></div>
+      </div>
+      <div class="pose-reaction-row"><div id="pose-speech" class="pose-speech hidden" aria-live="polite" aria-hidden="true"></div></div>
+      <button id="btn-toggle-pose" class="pose-toggle-bar" type="button" title="댕댕이 화면 접기" aria-expanded="true" aria-label="댕댕이 화면 접기">
+        <span id="pose-toggle-face" class="pose-toggle-face companion-viewport" aria-hidden="true"></span>
+        <span id="pose-toggle-label">댕댕이 접기</span>
+        <span id="pose-toggle-chevron" aria-hidden="true">▾</span>
+      </button>
+    </div>
+
+    <!-- ====== 설정 패널 (숨김) ====== -->
+    <div id="settings-panel" class="settings-panel hidden" role="region" aria-label="설정">
+      <div class="settings-header">
+        <h3>⚙️ 설정</h3>
+        <button id="btn-close-settings" class="icon-btn settings-close" type="button" title="설정 닫기" aria-label="설정 닫기">✕</button>
+      </div>
+      <div class="settings-body">
+      <h3>API 설정</h3>
+
+      <!-- 프리셋 선택 -->
+      <div class="setting-group">
+        <label class="setting-label">🔖 프리셋 (빠른 선택)</label>
+        <select id="preset-selector" class="preset-selector"></select>
+        <p id="preset-desc" class="preset-desc"></p>
+      </div>
+
+      <!-- API 주소 -->
+      <div class="setting-group">
+        <label class="setting-label">🌐 API 주소 (Base URL)</label>
+        <input type="text" id="input-api-base" class="setting-input"
+               placeholder="https://llm.moip.go.kr/api/v1" />
+      </div>
+
+      <!-- 모델명 -->
+      <div class="setting-group">
+        <label class="setting-label">🧠 모델명 (Model)</label>
+        <input type="text" id="input-model" class="setting-input"
+               placeholder="gpt-oss-120b" />
+      </div>
+
+      <!-- API 키 -->
+      <div class="setting-group">
+        <label class="setting-label">🔑 API 키</label>
+        <div class="api-key-row">
+          <input type="password" id="input-api-key" class="setting-input"
+                 placeholder="sk-... (로컬 LLM은 비워두세요)" />
+          <button id="btn-toggle-key-vis" class="icon-btn" title="키 보기/숨기기" aria-label="API 키 보이기 또는 숨기기">👁️</button>
+        </div>
+      </div>
+
+      <!-- Max Tokens -->
+      <div class="setting-group">
+        <label class="setting-label">🌐 웹페이지 읽기 용량 (최대 글자 수)</label>
+        <div class="token-slider-row">
+          <input type="range" id="input-page-chars" class="token-slider"
+                 min="500" max="20000" step="500" value="5000" />
+          <span id="page-chars-value" class="token-value">5,000</span>
+        </div>
+        <p class="preset-desc">500: 빠르게 / 5,000: 기본 / 10,000: 자세히 / 20,000: 최대</p>
+      </div>
+
+      <div class="setting-group">
+        <label class="setting-label">📏 기본 응답 길이 (max_tokens, 요청 기본값)</label>
+        <div class="token-slider-row">
+          <input type="range" id="input-max-tokens" class="token-slider"
+                 min="256" max="55000" step="256" value="25000" />
+          <span id="max-tokens-value" class="token-value">25,000</span>
+        </div>
+        <p class="preset-desc">요청 기본값일 뿐, 실제 요청은 모델 한도와 입력 크기에 맞게 자동 조정돼요.</p>
+      </div>
+
+      <div class="setting-group">
+        <label class="setting-label">🧠 모델 컨텍스트 상한 (토큰)</label>
+        <div class="token-slider-row">
+          <input type="range" id="input-model-context" class="token-slider"
+                 min="4096" max="256000" step="1024" value="32768" />
+          <span id="model-context-value" class="token-value">32,768</span>
+        </div>
+        <p class="preset-desc">모델이 받을 수 있는 전체 토큰(입력+출력). 모르면 보수적 기본값 유지.</p>
+      </div>
+
+      <div class="setting-group">
+        <label class="setting-label">📤 모델 최대 출력 상한 (토큰)</label>
+        <div class="token-slider-row">
+          <input type="range" id="input-model-max-out" class="token-slider"
+                 min="512" max="128000" step="512" value="8192" />
+          <span id="model-max-out-value" class="token-value">8,192</span>
+        </div>
+        <p class="preset-desc">이 모델이 한 번에 생성할 수 있는 최대 출력 토큰.</p>
+      </div>
+
+      <!-- 저장 + 테스트 -->
+      <div class="setting-group">
+        <div class="api-actions">
+          <button id="btn-save-api" class="btn-save-api">💾 API 설정 저장</button>
+          <button id="btn-test-api" class="btn-test-api">🔍 연결 테스트</button>
+        </div>
+        <p id="api-test-result" class="api-test-result hidden"></p>
+      </div>
+
+      <hr class="setting-divider" />
+
+      <h3>🎮 기능 설정</h3>
+      <div class="setting-group">
+        <div class="toggle-item">
+          <span>주기적 말 걸기</span>
+          <input type="checkbox" id="toggle-proactive" />
+        </div>
+        <div class="interval-slider-row">
+          <span class="interval-label">⏱️ 말 걸기 간격</span>
+          <div class="interval-slider-wrap">
+            <input type="range" id="input-interval" class="interval-slider"
+                   min="1" max="30" step="1" value="15" />
+            <span id="interval-value" class="interval-display">15분</span>
+          </div>
+        </div>
+        <div class="toggle-item">
+          <span>웹 콘텐츠 인식</span>
+          <input type="checkbox" id="toggle-content-aware" checked />
+        </div>
+        <div class="toggle-item">
+          <span>아바타 다가가기</span>
+          <input type="checkbox" id="toggle-approach" />
+        </div>
+        <div class="toggle-item">
+          <span>혼자 구경하기</span>
+          <input type="checkbox" id="toggle-wander" />
+        </div>
+        <div class="interval-slider-row">
+          <span class="interval-label">🐾 구경 간격</span>
+          <div class="interval-slider-wrap">
+            <input type="range" id="input-wander-interval" class="interval-slider"
+                   min="1" max="5" step="1" value="1" />
+            <span id="wander-interval-value" class="interval-display">1분</span>
+          </div>
+        </div>
+        <div class="toggle-item">
+          <span>플로팅 아바타</span>
+          <input type="checkbox" id="toggle-floating-avatar" />
+        </div>
+        <div class="toggle-item">
+          <span>말풍선 표시</span>
+          <input type="checkbox" id="toggle-speech-bubbles" />
+        </div>
+        <div class="setting-group"><label class="setting-label" for="movement-selector">움직임</label><select id="movement-selector" class="preset-selector"><option value="calm">차분하게</option><option value="normal">보통</option><option value="lively">활발하게</option></select></div>
+        <div class="toggle-item"><span>집중 모드</span><input type="checkbox" id="toggle-focus" aria-label="집중 모드" /></div>
+        <div class="setting-group">
+          <label class="setting-label" for="theme-selector">🎨 테마</label>
+          <select id="theme-selector" class="preset-selector" aria-label="테마 선택">
+            <option value="auto">시스템 따라가기</option>
+            <option value="pastel">파스텔 (밝게)</option>
+            <option value="dark">다크</option>
+          </select>
+        </div>
+      </div>
+
+      <h3>🐾 놀이 기억 · 이 기기 전용</h3>
+      <section id="play-memory-settings" class="setting-group" aria-label="놀이 기억 관리">
+        <label class="toggle-item" for="toggle-play-memory"><span>놀이 기억 사용</span><input id="toggle-play-memory" type="checkbox" disabled aria-describedby="play-memory-help" /></label>
+        <p id="play-memory-help" class="play-memory-help">기본 OFF입니다. 직접 고른 동작이 정상 완료될 때만 기록해요. 취소·실패·자동 동작은 세지 않아요. 제자리·동작 줄이기 모드의 정상 완료는 포함해요.</p>
+        <p class="play-memory-help">OFF는 기록과 기억 표현을 멈추고 데이터를 보관해요. 초기화는 놀이 기록과 선호만 지워요. 대화·기억 메모·API 설정은 유지해요. 이 기록은 서버나 AI에 보내지 않아요.</p>
+        <dl class="play-memory-counts"><div><dt>이리 와</dt><dd data-play-count="come">0</dd></div><div><dt>앉아</dt><dd data-play-count="sit">0</dd></div><div><dt>손</dt><dd data-play-count="paw">0</dd></div><div><dt>공놀이</dt><dd data-play-count="play">0</dd></div><div><dt>쓰다듬기</dt><dd data-play-count="pet">0</dd></div></dl>
+        <p class="play-memory-help">마지막 정상 완료: <time id="play-memory-last">아직 없음</time></p>
+        <label class="setting-label" for="play-memory-preference">제안할 놀이</label>
+        <select id="play-memory-preference" class="preset-selector" disabled><option value="auto">기록으로 살펴보기</option><option value="none">제안하지 않기</option><option value="come">이리 와</option><option value="sit">앉아</option><option value="paw">손</option><option value="play">공놀이</option><option value="pet">쓰다듬기</option></select>
+        <p id="play-memory-favorite" class="play-memory-help">기록이 더 쌓이면 자주 고른 놀이를 제안해요.</p>
+        <p class="play-memory-help">자동 제안은 총 8회 이상, 최다 5회 이상, 다음 항목과 2회 이상 차이일 때만 해요. 동률이면 제안하지 않아요.</p>
+        <button type="button" id="btn-reset-play-memory" class="btn-small" disabled>놀이 기억 초기화</button>
+        <div id="play-memory-confirm" hidden><p>놀이 횟수·시각·선호를 모두 지울까요?</p><button type="button" id="btn-confirm-play-memory" class="btn-small">놀이 기억 삭제</button> <button type="button" id="btn-cancel-play-memory" class="btn-small">취소</button></div>
+        <p id="play-memory-status" role="status" aria-live="polite"></p>
+      </section>
+      <h3>🧠 직접 편집한 기억 메모</h3>
+      <div class="setting-group">
+        <label class="setting-label" for="input-user-name">호칭 (어떻게 불러줄까)</label>
+        <input type="text" id="input-user-name" class="setting-input" maxlength="20"
+               placeholder="예: 집사님, 민수" />
+        <label class="setting-label" for="input-likes">좋아하는 것 (쉼표로 구분)</label>
+        <input type="text" id="input-likes" class="setting-input"
+               placeholder="예: 산책, 치즈, 코딩" />
+        <label class="setting-label" for="input-dislikes">싫어하는 것 (쉼표로 구분)</label>
+        <input type="text" id="input-dislikes" class="setting-input"
+               placeholder="예: 청소기, 번개" />
+        <label class="setting-label" for="input-memory-notes">기억할 메모 (한 줄에 하나)</label>
+        <textarea id="input-memory-notes" class="setting-input memory-notes" rows="3"
+                  placeholder="생일이 3월이야&#10;저녁에 공부하는 걸 좋아해"></textarea>
+        <button id="btn-save-memory" class="btn-save-api" type="button">기억 저장</button>
+      </div>
+
+      <h3>💾 데이터 관리</h3>
+      <div class="setting-group">
+        <div class="storage-info" id="storage-info">
+          <span>로딩 중...</span>
+        </div>
+        <div class="data-btn-row">
+          <button id="btn-export" class="btn-small btn-export">📥 내보내기 (JSON)</button>
+          <button id="btn-import" class="btn-small btn-import" onclick="document.getElementById('import-file').click()">📤 가져오기</button>
+          <input type="file" id="import-file" accept=".json" style="display:none" />
+        </div>
+      </div>
+
+      <p class="dev-credit">✦ TeamProtoFelix ✦</p>
+      </div>
+    </div>
+
+    <!-- ====== 채팅 메시지 영역 ====== -->
+    <main id="chat-container" aria-label="대화">
+      <div id="messages" class="messages" role="log" aria-live="polite" aria-relevant="additions">
+        <!-- 환영 메시지 -->
+        <div class="message-bubble avatar">
+          <div class="bubble-content">
+            안녕 멍! 나는 댕댕이야~ (╹◡╹)♡<br>
+            너의 반려 AI가 되어줄게! 심심할 때 언제든 말 걸어줘~
+          </div>
+          <span class="bubble-time">지금</span>
+        </div>
+      </div>
+
+      <!-- 타이핑 인디케이터 -->
+      <div id="typing-indicator" class="typing-indicator hidden" aria-live="assertive">
+        <div class="typing-dots">
+          <span></span><span></span><span></span>
+        </div>
+        <span class="typing-text">댕댕이가 답장을 쓰고 있어...</span>
+      </div>
+    </main>
+
+    <!-- ====== 업무 모드 패널 (숨김) ====== -->
+    <div id="work-panel" class="work-panel hidden">
+      <div class="work-scroll">
+      <div class="work-header">
+        <span class="work-icon">💼</span>
+        <span>업무 모드 — 특허 심사</span>
+      </div>
+
+      <!-- 입력 영역 A: 출원발명 / 명세서 -->
+      <div class="work-input-group">
+        <div class="work-label-row">
+          <label class="work-label" id="work-label-a">📄 명세서 (출원발명)</label>
+          <button type="button" class="btn-upload-file" id="btn-upload-work-a" data-target="a" title="파일에서 글자 넣기">📎 파일</button>
+        </div>
+        <textarea id="work-input-a" class="work-textarea"
+                  placeholder="특허 명세서 또는 청구범위를 붙여넣거나, 파일을 올려주세요..."
+                  rows="6"></textarea>
+        <span class="work-char-count" id="work-char-count-a">0자</span>
+      </div>
+
+      <!-- 입력 영역 B: 비교대상 / 의견서 -->
+      <div class="work-input-group" id="work-input-group-b">
+        <div class="work-label-row">
+          <label class="work-label" id="work-label-b">📋 비교대상발명 / 의견제출통지서</label>
+          <button type="button" class="btn-upload-file" id="btn-upload-work-b" data-target="b" title="파일에서 글자 넣기">📎 파일</button>
+        </div>
+        <textarea id="work-input-b" class="work-textarea"
+                  placeholder="비교대상 명세서 또는 의견제출통지서를 붙여넣거나, 파일을 올려주세요..."
+                  rows="6"></textarea>
+        <span class="work-char-count" id="work-char-count-b">0자</span>
+      </div>
+      <input type="file" id="work-file-input" class="hidden-file" accept=".pdf,.hwpx,.txt,.md,.json,.xml,.text,.markdown" />
+
+      <!-- 업무 버튼 -->
+      <div class="work-actions">
+        <button id="btn-work-defect" class="work-btn">📝 기재불비 검토</button>
+        <button id="btn-work-novelty" class="work-btn">🔍 신규성/진보성 검토</button>
+        <button id="btn-work-diagnosis" class="work-btn">🩺 진단 (의견서 평가)</button>
+      </div>
+      <p class="work-hint">기재불비: 명세서만 입력 | 신규성/진보성: A=출원발명, B=비교대상 | 진단: A=출원발명, B=의견제출통지서</p>
+
+      </div>
+      <div id="work-status-dock" class="work-status-dock" aria-live="polite">
+        <div id="work-idle" class="work-idle">
+          위에서 검토를 누르면 진행 상황이 여기에 보여요
+        </div>
+        <div id="work-loading" class="work-loading hidden">
+          <div class="typing-dots"><span></span><span></span><span></span></div>
+          <div class="work-loading-copy">
+            <strong id="work-loading-title">검토 중이에요</strong>
+            <span id="work-loading-time">0초</span>
+          </div>
+          <div class="work-progress"><div id="work-progress-bar" class="work-progress-bar"></div></div>
+        </div>
+        <div id="work-done" class="work-done hidden">
+          <div class="work-done-head">
+            <span class="work-done-icon">✅</span>
+            <span id="work-done-label">검토 완료!</span>
+          </div>
+          <div class="download-formats" role="group" aria-label="결과 다운로드 형식">
+            <button type="button" class="work-btn-download" data-dl-fmt="md">MD</button>
+            <button type="button" class="work-btn-download" data-dl-fmt="txt">TXT</button>
+            <button type="button" class="work-btn-download" data-dl-fmt="json">JSON</button>
+            <button type="button" class="work-btn-download" data-dl-fmt="pdf">PDF</button>
+            <button type="button" class="work-btn-download" data-dl-fmt="hwpx">HWPX</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ====== 코딩 모드 패널 ====== -->
+    <div id="code-panel" class="code-panel hidden">
+      <div class="code-scroll">
+        <div class="code-intro">
+          <strong>⚡ 코딩 모드</strong>
+          <span>만들고 싶은 걸 말하면, 크롬에서 바로 열리는 HTML 미니앱을 만들어 줄게.</span>
+        </div>
+        <label class="code-label" for="code-prompt">만들고 싶은 것</label>
+        <textarea id="code-prompt" class="code-textarea code-prompt" rows="14"
+          placeholder="예: 할 일 목록, 타이머, 메모장, 주사위, 간단한 계산기…"></textarea>
+        <div class="code-gen-row">
+          <button type="button" id="btn-code-gen" class="code-btn-primary">▶ 만들기</button>
+          <button type="button" id="btn-code-revise" class="code-btn">다듬기</button>
+        </div>
+        <label class="code-label" for="code-out">app.html</label>
+        <textarea id="code-out" class="code-textarea code-out" rows="10" spellcheck="false"
+          placeholder="생성된 HTML이 여기에 나타나요…"></textarea>
+      </div>
+      <div id="code-dock" class="code-dock">
+        <div class="code-dock-status">
+          <strong id="code-status">준비됨</strong>
+          <span id="code-meta">받은 HTML을 크롬에서 열면 버튼이 동작해요</span>
+        </div>
+        <div class="code-dock-actions">
+          <button type="button" id="btn-code-preview" class="code-btn-primary" title="HTML을 받은 뒤 크롬에서 직접 여세요">다운받아 실행</button>
+          <button type="button" id="btn-code-dl" class="code-btn">다운로드</button>
+          <button type="button" id="btn-code-copy" class="code-btn">복사</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ====== 입력 영역 ====== -->
+    <footer id="input-area">
+      <div class="input-row">
+        <button type="button" id="btn-attach" class="btn-attach" title="파일 첨부 (pdf, hwpx, txt, md, json, xml)" aria-label="파일 첨부">📎</button>
+        <input type="file" id="chat-file-input" class="hidden-file" accept=".pdf,.hwpx,.txt,.md,.json,.xml,.text,.markdown" />
+        <textarea
+          id="message-input"
+          class="message-input"
+          placeholder="말을 걸거나 파일을 올려보세요..."
+          maxlength="100000"
+          rows="1"
+          aria-label="메시지 입력"
+        ></textarea>
+        <button id="btn-send" class="btn-send" title="전송 (Enter)" aria-label="메시지 전송">💕</button>
+      </div>
+      <div class="input-hint">
+        <span>Enter 전송 · 📎 파일(글자만)</span>
+        <span id="char-count">0/100000</span>
+      </div>
+    </footer>
+
+  </div>
+
+  <div id="onboarding" class="onboarding hidden" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+    <div class="onboarding-card">
+      <div id="onboarding-avatar" class="companion-viewport" role="img" aria-label="댕댕이 인사"></div>
+      <h2 id="onboarding-title">안녕 멍! 나는 댕댕이야</h2>
+      <p>대화를 시작하려면 API 키가 필요해요. 설정에서 프리셋을 고르고 키를 넣어줘!</p>
+      <p class="onboarding-hint">로컬 Ollama는 키 없이 바로 쓸 수 있어.</p>
+      <button id="btn-onboarding-settings" class="btn-save-api" type="button">⚙️ 설정 열기</button>
+      <button id="btn-onboarding-later" class="btn-close" type="button">나중에</button>
+    </div>
+  </div>
+
+  <!-- 스크립트 -->
+  <script src="config.js"></script>
+  <script src="utils.js"></script>
+  <script src="messages.js"></script>
+  <script src="moods.js"></script>
+  <script src="indexeddb-storage.js"></script>
+  <script src="companion-policy.js"></script>
+  <script src="play-memory.js"></script>
+  <script src="storage.js"></script>
+  <script src="api.js"></script>
+  <script src="file-io.js"></script>
+  <script src="companion-assets.js"></script>
+  <script src="companion-player.js"></script>
+  <script src="companion-behavior.js"></script>
+  <script src="companion-controls.js"></script>
+  <script src="play-memory-client.js"></script>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

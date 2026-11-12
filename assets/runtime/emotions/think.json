@@ -1,0 +1,41 @@
+{
+  "image": "think.webp",
+  "frameSize": [
+    320,
+    320
+  ],
+  "anchor": [
+    160,
+    296
+  ],
+  "clips": {
+    "think": {
+      "frames": [
+        [
+          0,
+          0,
+          320,
+          320
+        ],
+        [
+          320,
+          0,
+          320,
+          320
+        ]
+      ],
+      "sequence": [
+        0,
+        1,
+        0
+      ],
+      "durations": [
+        800,
+        700,
+        400
+      ],
+      "loop": false,
+      "holdFrame": 0
+    }
+  }
+}
