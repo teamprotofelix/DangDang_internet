@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { mkdtemp, rm } = require('node:fs/promises');
+const { mkdtemp, readFile, rm } = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { chromium } = process.env.DANGDANG_PLAYWRIGHT
@@ -63,7 +63,9 @@ async function main() {
     await page.route('https://api.exaone.ai/v1/chat/completions', async route => {
       const body = route.request().postDataJSON();
       assert.equal(route.request().headers().authorization, 'Bearer fixture-exaone');
-      const content = body.messages[0].role === 'user' ? 'OK'
+      const ordinary = body.messages.at(-1).content === '일반 대화 회귀';
+      const content = ordinary ? JSON.stringify({ mood: 'smile', message: '대화 응답 확인' })
+        : body.messages[0].role === 'user' ? 'OK'
         : 'File: main.py\n```python\nprint("안녕")\n```\nFile: README.md\n```markdown\n사용법\n```';
       if (body.messages.length > 1 && /existingFiles/.test(body.messages[1].content)) browserCode.push(body.messages[1].content);
       return route.fulfill({ json: { choices: [{ message: { content }, finish_reason: 'stop' }] } });
@@ -90,6 +92,9 @@ async function main() {
     console.log('Provider and KIPRIS settings saved');
 
     await page.click('#btn-mode-chat');
+    await page.fill('#message-input', '일반 대화 회귀');
+    await page.click('#btn-send');
+    await page.waitForFunction(() => document.querySelector('#messages').textContent.includes('대화 응답 확인'));
     await page.check('#chat-code-enabled');
     await page.fill('#message-input', 'Python으로 수정해 주세요');
     await page.click('#btn-send');
@@ -127,7 +132,15 @@ async function main() {
     const report = page.waitForEvent('download');
     await page.click('[data-patent-format="json"]');
     assert.match((await report).suggestedFilename(), /1099990000001\.json$/);
+    for (const [format, magic] of [['pdf', '%PDF-'], ['hwpx', 'PK']]) {
+      const event = page.waitForEvent('download');
+      await page.click('[data-patent-format="' + format + '"]');
+      const downloaded = await event;
+      assert.equal(downloaded.suggestedFilename().split('.').at(-1), format);
+      assert.ok((await readFile(await downloaded.path())).subarray(0, magic.length).equals(Buffer.from(magic)));
+    }
     await page.reload();
+    await page.click('#btn-mode-work');
     await page.waitForFunction(() => document.querySelector('#patent-report').textContent.includes('시험 근거 문장입니다.'));
     await page.click('#patent-delete');
     await page.waitForFunction(() => document.querySelector('#patent-report').textContent === '');

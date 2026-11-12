@@ -91,12 +91,12 @@ class SidePanelController {
 
   async init() {
     this.bindEvents();
+    await this.restoreAppMode();
     await this.loadHistory();
     await this.loadSettings();
     await this.loadMemoryToUI();
     await this.playMemoryClient?.ready({reunion:true});
     this.maybeShowOnboarding();
-    this.restoreAppMode();
     this.scrollToBottom();
 
     if (window.matchMedia) {

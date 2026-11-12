@@ -3,6 +3,7 @@ class PatentPanel {
     this.panel = panel;
     this.input = document.getElementById('patent-application');
     this.status = document.getElementById('patent-status');
+    this.historyStatus = document.getElementById('patent-history-status');
     this.list = document.getElementById('patent-docs');
     this.body = document.getElementById('patent-report');
     this.record = null;
@@ -111,6 +112,8 @@ class PatentPanel {
   render(record) {
     this.record = record;
     const busy = record?.state === 'running';
+    this.historyStatus.textContent = record?.historyStatus && record.historyStatus !== 'pending'
+      ? '행정처리 이력 · ' + (Kipris.messages[record.historyStatus] || record.historyStatus) : '';
     this.status.textContent = record?.error || record?.phase
       || (record?.state ? Kipris.messages[record.state] || ({ completed: '진단 완료', failed: '실패' })[record.state] || '' : '');
     for (const id of ['patent-lookup', 'patent-start']) document.getElementById(id).disabled = busy;

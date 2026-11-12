@@ -509,7 +509,7 @@ class APIError extends Error {
     }
     if (this.partialContent || this.statusCode === 422 || this.statusCode === 499) return this.message;
     if (this.statusCode === 429 && this.retryAfterMs != null) {
-      return `서비스 요청 한도를 초과했습니다. 약 ${Math.ceil(this.retryAfterMs / 1000)}초 후 다시 시도해 주세요.`;
+      return `서비스가 혼잡하거나 요청 한도에 도달했습니다. 약 ${Math.ceil(this.retryAfterMs / 1000)}초 후 다시 시도해 주세요.`;
     }
     switch (this.statusCode) {
       case 401:
@@ -519,7 +519,7 @@ class APIError extends Error {
       case 404:
         return 'API 주소를 찾을 수 없어요... URL이 올바른지 확인해볼까요?';
       case 429:
-        return '앗, 너무 많은 요청을 보냈나 봐요! 조금만 기다려주세요~ (╹◡╹)';
+        return '서비스가 혼잡하거나 요청 한도에 도달했습니다. 잠시 후 다시 시도해 주세요.';
       case 500:
       case 502:
       case 503:
