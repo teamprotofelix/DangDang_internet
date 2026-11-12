@@ -534,6 +534,63 @@ test('OA-15는 선행·최후통지에 연결된 원문을 보내고 두 통지�
   assert.equal((await run(specDocs, [...specNotices, ...[filing, amendment].map(reference)])).level, noFinding);
 });
 
+test('OA-15는 제42조 제4항 제1호만 적힌 통지에도 해당 시점의 명세서 원문을 요구', async () => {
+  const noFinding = '검토한 규칙에서 발견되지 않음';
+  const verified = { status: 'verified', identityVerified: true };
+  const filing = { id: 'app', kind: 'APP', title: '특허출원서', date: '20990101', serial: '1' };
+  const amendment = { id: 'am', kind: 'AM', title: '보정서', date: '20990103', serial: '2' };
+  const notice = (id, title, date, text) => ({ ...verified, id, title, date, kind: 'OA', pages: [{ page: 1, text }] });
+  const prior = notice('prior', '의견제출통지서', '20990102', '특허법 제42조 제4항 제2호');
+  const final = notice('final', '최후의견제출통지서', '20990104', '특허법 제42조 제4항 제1호');
+  const originals = [filing, amendment].map((doc, index) => ({ ...doc, ...verified,
+    pages: [{ page: index + 2, text: '발명의 설명에 기재된 센서 구성 ' + index }] }));
+  const record = { application: app, historyStatus: 'complete', collectionStatus: 'complete', claimStatus: 'complete',
+    claimHistory: { events: [filing, amendment], changes: [
+      { ...filing, claim: '1', change: '신규', text: '센서를 갖는 장치' },
+      { ...amendment, claim: '1', change: '수정', text: '온도 센서를 갖는 장치' }
+    ] } };
+  const run = async (notices, filings, references = []) => {
+    let request;
+    const { PatentDiagnosis } = testRuntime(async (_, options) => {
+      const input = JSON.parse(JSON.parse(options.body).messages[1].content);
+      const checksOA15 = input.rules.some(([rule]) => rule === 'OA-15');
+      if (checksOA15) request = input;
+      const evidence = [...notices, ...references].map(doc => ({ document: doc.id,
+        page: doc.pages[0].page, quote: doc.pages[0].text }));
+      const rows = checksOA15 ? [{ rule: 'OA-15', level: noFinding, evidence,
+        comparison: '비교', analysis: '분석', verdict: '판정' }] : [];
+      return Response.json({ choices: [{ message: { content: JSON.stringify(rows) }, finish_reason: 'stop' }] });
+    });
+    const report = await PatentDiagnosis.evaluate({ ...record, docs: [...notices, ...filings] }, exa,
+      new AbortController().signal, async () => {});
+    return { request, finding: report.findings.find(row => row.rule === 'OA-15') };
+  };
+
+  const missing = await run([prior, final], [filing, amendment]);
+  assert.equal(missing.finding.level, '확인 불가');
+  assert.match(missing.finding.verdict, /명세서·도면 또는 보정서/);
+  assert.equal(missing.request, undefined);
+  const missingAmendment = await run([prior, final], [originals[0], amendment]);
+  assert.equal(missingAmendment.finding.level, '확인 불가');
+  assert.equal(missingAmendment.request, undefined);
+  const noticesOnly = await run([prior, final], originals);
+  assert.deepEqual(noticesOnly.request.requiredOriginals, [filing.id, amendment.id]);
+  assert.deepEqual(noticesOnly.request.documents.map(doc => doc.id), [final.id, prior.id, filing.id, amendment.id]);
+  assert.equal(noticesOnly.finding.level, '확인 불가');
+  assert.equal((await run([prior, final], originals, originals)).finding.level, noFinding);
+
+  const mixed = notice(final.id, final.title, final.date, '특허법 제４２조\n제４항 제２호 및 제１호');
+  assert.equal((await run([prior, mixed], [filing, amendment])).finding.level, '확인 불가');
+  const clarity = { ...final, pages: prior.pages };
+  const clarityOnly = await run([prior, clarity], [filing, amendment]);
+  assert.deepEqual(clarityOnly.request.requiredOriginals, []);
+  assert.equal(clarityOnly.finding.level, noFinding);
+  const priorSupport = { ...prior, pages: final.pages };
+  const priorOnly = await run([priorSupport, clarity], [originals[0], amendment], [originals[0]]);
+  assert.deepEqual(priorOnly.request.requiredOriginals, [filing.id]);
+  assert.equal(priorOnly.finding.level, noFinding);
+});
+
 test('긴 문서 대조는 여러 원문의 쪽별 발췌를 사용하고 발견 없음 판정은 보류', async () => {
   const quote = '청구항 제1항의 문언';
   const pages = [1, 2].map(page => ({ page, text: quote + ' 추가 문장'.repeat(7000) }));
