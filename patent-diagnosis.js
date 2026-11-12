@@ -166,18 +166,17 @@ const PatentDiagnosis = (() => {
       }
     }
 
-    const status = record.collectionStatus !== 'complete' || !targetsEvaluated(findings)
-      || findings.some(row => row.level === '확인 불가') ? 'partial' : 'completed';
+    const evaluated = findings.some(row => row.level !== '확인 불가');
+    let status = 'completed';
+    if (!tasks.length && !evaluated) status = 'no_evidence';
+    else if (record.collectionStatus !== 'complete' || !evaluated
+      || findings.some(row => row.level === '확인 불가')) status = 'partial';
     return { application: record.application, queriedAt: record.queriedAt, historyStatus: record.historyStatus,
       collectionStatus: record.collectionStatus, claimStatus: record.claimStatus,
       registeredClaimStatus: record.registeredClaimStatus, status,
-      documents: record.docs.map(({ id, title, date, kind, status, processing, size, pageCount, source }) =>
-        ({ id, title, date, kind, status, processing, size, pageCount, source })),
+      documents: record.docs.map(({ id, title, date, kind, status, processing, size, pageCount, source, gazetteNumber }) =>
+        ({ id, title, date, kind, status, processing, size, pageCount, source, gazetteNumber })),
       versions, findings, used, omitted, calls };
-  }
-
-  function targetsEvaluated(findings) {
-    return findings.some(row => row.level !== '확인 불가');
   }
 
   function format(report) {
@@ -190,7 +189,7 @@ const PatentDiagnosis = (() => {
       '', '## 문서와 확보 상태'
     ];
     for (const doc of report.documents) lines.push(
-      `- ${doc.title} · ${doc.date || '일자 미확인'} · ${doc.id} · ${Kipris.messages[doc.status] || doc.status}${doc.pageCount ? ` · ${doc.pageCount}쪽` : ''}`);
+      `- ${doc.title} · ${doc.date || '일자 미확인'} · ${doc.gazetteNumber || doc.id} · ${Kipris.messages[doc.status] || doc.status}${doc.pageCount ? ` · ${doc.pageCount}쪽` : ''}`);
     lines.push('', '## 적용 청구항 판본');
     for (const [id, version] of Object.entries(report.versions)) {
       lines.push(`- ${id} · ${version.asOf || version.registeredAt || '미확인'} · ${version.claims.length}항 · ${version.reason || '등록공보와 청구항 API 대조'}`);
@@ -207,9 +206,12 @@ const PatentDiagnosis = (() => {
     for (const item of report.used) lines.push(`- ${item.document} ${item.pages.join(', ')}쪽 · ${item.rules.join(', ')}${item.fragment ? ' · 일부 발췌' : ''}`);
     lines.push('', '## 원문 분석 한계');
     for (const item of report.omitted) lines.push(`- ${item.document} ${item.pages.join(', ')}쪽 · ${item.reason}`);
-    lines.push('', '## 종합 의견', report.status === 'completed'
-      ? '확보된 원문에 대한 규칙별 근거와 조건부 점검을 위에 표시했습니다.'
-      : '부분 진단입니다. 자료 또는 응답이 부족한 항목은 규칙별 보류 사유를 확인해 주세요.');
+    const summary = {
+      no_evidence: '분석 가능한 원문이 없어 진단을 보류했습니다. 외부 모델에 원문을 전송하지 않았습니다. 문서별 확보 상태를 확인해 주세요.',
+      completed: '확보된 원문에 대한 규칙별 근거와 조건부 점검을 위에 표시했습니다.',
+      partial: '부분 진단입니다. 자료 또는 응답이 부족한 항목은 규칙별 보류 사유를 확인해 주세요.'
+    };
+    lines.push('', '## 종합 의견', summary[report.status] || summary.partial);
     return lines.join('\n');
   }
 

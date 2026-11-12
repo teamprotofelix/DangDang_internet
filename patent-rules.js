@@ -55,7 +55,7 @@ const PatentRules = (() => {
     if (rows.some(row => row.kind === 'AM' && row.date === target.date)) return failure('통지와 보정이 같은 날이라 선후 관계 미확인');
     const events = history.events.filter(row => row.date < target.date)
       .sort((a, b) => a.date.localeCompare(b.date) || Number(a.serial) - Number(b.serial));
-    if (!events.length || !/^(?:특허|실용신안)?출원서|국내단계|국내서면|번역문|최초출원|국내출원/.test(events[0].title.replace(/\s/g, ''))) {
+    if (!events.length || !/^(?:(?:특허|실용신안)?출원서|국내단계|국내서면|번역문|최초출원|국내출원)/.test(Kipris.normalizedTitle(events[0].title))) {
       return failure('최초 출원 또는 국내단계 청구항 근거 없음');
     }
     if (history.events.some(row => !row.date || row.date === target.date)

@@ -8,7 +8,7 @@ const paths = ['config.js', 'utils.js', 'api.js', 'coding.js', 'file-io.js', 'ki
 const source = paths.map(path => readFileSync(path, 'utf8')).join('\n');
 const testRuntime = fetch => {
   const ctx = vm.createContext({ URL, fetch, AbortController, AbortSignal, setTimeout, clearTimeout,
-    TextDecoder, TextEncoder, Blob, Response, console: { warn() {} } });
+    TextDecoder, TextEncoder, Blob, Response, crypto, console: { warn() {} } });
   return vm.runInContext(source + `\n({ CONFIG, LLMClient, chatCompletionURL, buildChatCompletionRequest,
     CodeProjects, FileIO, Kipris, PatentRules, PatentDiagnosis, resolveKeyForOrigin, isTrustedExtensionUI })`, ctx);
 };
@@ -233,7 +233,8 @@ test('중간서류 XML에서 발송번호와 모든 PDF 경로를 읽고 취소 
   const { Kipris } = testRuntime(async url => {
     calls++;
     assert.match(url, /IntermediateDocumentOPService\/pdfInfoV2/);
-    return new Response(xml([1, 2].map(i => '<pdfInfoV2><sendNumber>' + i
+    const requested = new URL(url).searchParams.get('sendNumber');
+    return new Response(xml((requested ? [requested] : [1, 2]).map(i => '<pdfInfoV2><sendNumber>' + i
       + '</sendNumber><filePath>https://plus.kipris.or.kr/' + i + '.pdf?x=1&amp;y=2</filePath></pdfInfoV2>').join('')));
   });
   const signal = new AbortController();
@@ -241,9 +242,40 @@ test('중간서류 XML에서 발송번호와 모든 PDF 경로를 읽고 취소 
   assert.equal(paths.length, 2);
   assert.equal(paths[1].id, '2');
   assert.match(paths[1].path, /x=1&y=2/);
+  assert.deepEqual(plain(await Kipris.pdfLocations('OA', app, 'fixture-kipris', signal.signal, '2')), [plain(paths[1])]);
   signal.abort();
   await assert.rejects(Kipris.download(paths[1].path, signal.signal), { name: 'AbortError' });
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
+});
+
+test('공보 경로는 공보번호를 우선하며 번호 없는 경로는 정확한 해시로만 구별', async () => {
+  const { Kipris } = testRuntime(async () => new Response(xml([
+    '<item><publicationNumber>10-2099-0000011</publicationNumber><path>/file?ticket=alpha</path></item>',
+    '<item><docName>10-2099-0000012.pdf</docName><path>/file?ticket=beta</path></item>',
+    '<item><path>/file?ticket=gamma</path></item>',
+    '<item><path>/file?ticket=delta</path></item>'
+  ].join(''))));
+  const locations = await Kipris.pdfLocations('PUB', app, 'fixture-kipris', AbortSignal.timeout(1000));
+  assert.deepEqual(Array.from(locations, item => item.gazetteNumber), ['1020990000011', '1020990000012', null, null]);
+  assert.match(locations[2].gazetteLocator, /^[a-f0-9]{64}$/);
+  assert.notEqual(locations[2].gazetteLocator, locations[3].gazetteLocator);
+});
+
+test('공보 PDF는 출원번호가 같아도 요청한 공보번호와 다르면 검증하지 않음', async () => {
+  const { Kipris } = testRuntime();
+  const bytes = new TextEncoder().encode('%PDF-1.4\n' + ' '.repeat(150) + '%%EOF');
+  for (const [kind, title, label, expected, actual] of [
+    ['PUB', '공개특허공보', '공개번호', '1020990000011', '10-2099-0000012'],
+    ['REG', '등록특허공보', '등록번호', '100000011', '10-0000012']
+  ]) {
+    const extract = async () => ({ pageCount: 1, pages: [{ page: 1, text: title + '\n출원번호 ' + app + '\n' + label + ' ' + actual }] });
+    const mismatch = await Kipris.inspectPdf(bytes, app, { kind, gazetteNumber: expected }, extract);
+    assert.equal(mismatch.status, 'identity');
+    assert.equal(mismatch.pages.length, 0);
+    const match = await Kipris.inspectPdf(bytes, app, { kind, gazetteNumber: actual.replaceAll('-', '') }, extract);
+    assert.equal(match.status, 'verified');
+    assert.equal(match.gazetteNumber, actual.replaceAll('-', ''));
+  }
 });
 
 test('PDF 바이트·페이지·문서 식별자와 스캔 상태를 구분', async () => {
@@ -255,8 +287,27 @@ test('PDF 바이트·페이지·문서 식별자와 스캔 상태를 구분', as
   assert.equal((await Kipris.inspectPdf(bytes, app, doc, extract(page))).status, 'verified');
   assert.equal((await Kipris.inspectPdf(bytes, app, doc, extract('다른 출원번호'))).status, 'identity');
   assert.equal((await Kipris.inspectPdf(bytes, app, doc, extract(''))).status, 'pdf_text');
-  await assert.rejects(Kipris.inspectPdf(new TextEncoder().encode('<html>error</html>'), app, doc, extract(page)), { code: 'pdf' });
-  await assert.rejects(Kipris.inspectPdf(bytes, app, doc, async () => null), { code: 'pdf' });
+  await assert.rejects(Kipris.inspectPdf(new TextEncoder().encode('<html>error</html>'), app, doc, extract(page)), { code: 'pdf_format' });
+  await assert.rejects(Kipris.inspectPdf(bytes.subarray(0, -5), app, doc, extract(page)), { code: 'pdf_incomplete' });
+  await assert.rejects(Kipris.inspectPdf(new Uint8Array(), app, doc, extract(page)), { code: 'pdf_empty' });
+  await assert.rejects(Kipris.inspectPdf(new Uint8Array(Kipris.maxPdf + 1), app, doc, extract(page)), { code: 'pdf_size' });
+  assert.equal((await Kipris.inspectPdf(bytes, app, doc, async () => null)).status, 'pdf_parse');
+  const unavailable = await Kipris.inspectPdf(bytes, app, doc, async () => { throw new Kipris.Error('pdf_parser'); });
+  assert.equal(unavailable.status, 'pdf_parser');
+  assert.equal(unavailable.size, bytes.length);
+  assert.equal(unavailable.identityVerified, false);
+  assert.equal(unavailable.pages.length, 0);
+});
+
+test('행정처리 분류 접두사가 있는 최초 출원서를 당시 청구항의 시작점으로 인식', () => {
+  const { Kipris, PatentRules } = testRuntime();
+  const event = { serial: '1', id: '112099000000001', date: '20990101', title: '[특허출원]특허출원서' };
+  assert.equal(Kipris.documentType(event.title), 'APP');
+  const version = PatentRules.restoreClaims({ events: [event],
+    changes: [{ ...event, claim: '1', change: '신규', text: '센서를 포함하는 장치.' }] },
+  [{ ...event, kind: 'APP' }], { date: '20990102' });
+  assert.equal(version.status, 'reconstructed');
+  assert.equal(version.claims[0].text, '센서를 포함하는 장치.');
 });
 
 test('청구항은 최초 기록과 통지 이전 보정만 반영하고 당일 보정은 보류', () => {
@@ -398,7 +449,8 @@ test('검증된 특허 원문이 없으면 출원번호만 모델에 전송하�
     historyStatus: 'permission', docs: [{ id: 'oa', kind: 'OA', title: '통지서', status: 'permission' }] },
   exa, new AbortController().signal, async () => {});
   assert.equal(calls, 0);
-  assert.equal(report.status, 'partial');
+  assert.equal(report.status, 'no_evidence');
+  assert.match(PatentDiagnosis.format(report), /외부 모델에 원문을 전송하지 않았습니다/);
   assert.equal(report.findings.length, 14);
 });
 
