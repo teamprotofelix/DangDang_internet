@@ -19,6 +19,10 @@ const regPdf = testPdf(['등록특허공보', '출원번호 ' + registeredApp, '
 const trialPdf = testPdf(['심결문', '사건 2099당123', '2099.01.09']);
 const correctionPdf = testPdf(['정정공고(공개)', '출원번호 ' + registeredApp,
   '공개번호 1099990000004', '2099.01.11', '정정공고일련번호 2']);
+const correctedPdf = testPdf(['정정공고(공개)', '출원번호 ' + registeredApp,
+  '공개번호 1099990000004', '2099.01.11', '정정공고일련번호 1']);
+const wrongReplacement = testPdf(['정정공고(공개)', '출원번호 ' + registeredApp,
+  '공개번호 1099990000004', '2099.01.11', '정정공고일련번호 3']);
 const rotatingApp = '1099990000002';
 const rotatingNumber = '1099990000013';
 const rotatingPdf = testPdf(['공개특허공보', '출원번호 ' + rotatingApp, '공개번호 ' + rotatingNumber]);
@@ -41,7 +45,7 @@ async function main() {
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     page.on('dialog', dialog => dialog.dismiss());
-    await worker.evaluate(({ app, send, date, pdf, pubNumbers, pubPdfs, opinionId, rotatingApp, rotatingPdf, registeredApp, registration, trial, regDecisionId, regPdf, trialPdf, correctionPdf }) => {
+    await worker.evaluate(({ app, send, date, pdf, pubNumbers, pubPdfs, opinionId, rotatingApp, rotatingPdf, registeredApp, registration, trial, regDecisionId, regPdf, trialPdf, correctionPdf, correctedPdf, wrongReplacement }) => {
       const fetchOriginal = globalThis.fetch;
       globalThis.fixtureRequests = { kipris: 0, model: 0, pdf: 0, rotating: 0, correction: 0, correctionPdfs: 0, trial: 0 };
       const createOffscreen = chrome.offscreen.createDocument.bind(chrome.offscreen);
@@ -113,7 +117,11 @@ async function main() {
           if (url.pathname === '/trial.pdf') return new Response(trialPdf);
           if (url.pathname === '/correction.pdf') {
             globalThis.fixtureRequests.correctionPdfs++;
-            return new Response(correctionPdf);
+            const [attempt, serial] = url.searchParams.get('ticket').split('-').map(Number);
+            if (serial === 2 || attempt === 1) return new Response(correctionPdf);
+            if (attempt === 2) return new Response(wrongReplacement);
+            if (attempt === 3) return new Response(null, { status: 410 });
+            return new Response(correctedPdf);
           }
           if (url.searchParams.get('applicationNumber') === rotatingApp) {
             if (!url.pathname.includes('getPubFullTextInfoSearch')) return response('<items/>');
@@ -165,7 +173,7 @@ async function main() {
         settings: { onboardingDismissed: true },
         code_session: { prompt: '레거시', html: '<p>이전 세션</p>' }
       });
-    }, { app, send, date, pdf: testPdf(), pubNumbers, pubPdfs, opinionId, rotatingApp, rotatingPdf, registeredApp, registration, trial, regDecisionId, regPdf, trialPdf, correctionPdf });
+    }, { app, send, date, pdf: testPdf(), pubNumbers, pubPdfs, opinionId, rotatingApp, rotatingPdf, registeredApp, registration, trial, regDecisionId, regPdf, trialPdf, correctionPdf, correctedPdf, wrongReplacement });
     const browserCode = [];
     let delayed;
     let releaseDelayed;
@@ -516,7 +524,41 @@ async function main() {
           [doc.correctionSerial, doc.status, doc.identityVerified, doc.sameDateCorrection]) };
     }, registeredApp);
     assert.deepEqual(correctionCheck.rows, [['1', 'identity', false, true], ['2', 'verified', true, true]]);
-    assert.equal(correctionCheck.pdfFetches, 2);
+    assert.equal(correctionCheck.pdfFetches, 3);
+
+    const getCorrectionFile = () => worker.evaluate(async ({ app, id }) =>
+      new TextDecoder().decode(await PatentStore.file(app, id)), { app: registeredApp, id: correction1 });
+    assert.equal(await getCorrectionFile(), correctionPdf);
+    const retryOriginal = firstCorrection.getByRole('button', { name: '원문 다시 조회', exact: true });
+    await retryOriginal.click();
+    await firstCorrection.getByText('PDF 다운로드 경로가 만료됐거나 서버에서 찾을 수 없음', { exact: false }).waitFor();
+    await page.waitForFunction(() => !document.querySelector('#patent-start').disabled);
+    assert.equal(await getCorrectionFile(), correctionPdf);
+
+    await retryOriginal.click();
+    await firstCorrection.getByText('원문 검증 완료', { exact: false }).waitFor();
+    await page.waitForFunction(() => !document.querySelector('#patent-start').disabled);
+    assert.equal(await getCorrectionFile(), correctedPdf);
+    assert.equal(await retryOriginal.count(), 0);
+    assert.equal(await firstCorrection.getByText('PDF 다운로드 경로가 만료됐거나 서버에서 찾을 수 없음', { exact: false }).count(), 0);
+    assert.equal(await worker.evaluate(() => globalThis.fixtureRequests.correctionPdfs), 5);
+
+    // Exercise the same recovery through the full-case lookup and check that the verified peer is untouched.
+    await worker.evaluate(async ({ app, id, pdf }) => {
+      const record = await PatentStore.get(app);
+      const doc = record.docs.find(item => item.id === id);
+      const bytes = new TextEncoder().encode(pdf);
+      Object.assign(doc, { status: 'identity', pages: [], pageCount: 1, identityVerified: false, size: bytes.length });
+      await PatentStore.saveWithFile(record, id, bytes);
+    }, { app: registeredApp, id: correction1, pdf: correctionPdf });
+    await page.click('#patent-lookup');
+    await page.waitForFunction(async ({ app, id }) => {
+      const record = await PatentStore.get(app);
+      return record.state !== 'running' && record.docs.find(doc => doc.id === id).status === 'verified';
+    }, { app: registeredApp, id: correction1 });
+    assert.equal(await getCorrectionFile(), correctedPdf);
+    assert.equal(await worker.evaluate(() => globalThis.fixtureRequests.correctionPdfs), 6);
+    assert.equal(await secondCorrection.getByRole('button', { name: '원문 다시 조회', exact: true }).count(), 0);
     assert.deepEqual(errors, []);
     console.log('Chromium extension smoke passed: legacy migration, settings, code ZIP, PDF extraction, consent, diagnosis, restore, delete.');
   } finally {

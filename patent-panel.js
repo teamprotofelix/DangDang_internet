@@ -148,6 +148,11 @@ class PatentPanel {
       label.append(title, details);
       const state = row.insertCell();
       state.textContent = Kipris.documentStatus(doc) + (doc.pageCount ? ` · ${doc.pageCount}쪽` : '');
+      if (doc.originalLookupError) {
+        const lookupError = document.createElement('div');
+        lookupError.textContent = '원문 다시 조회 · ' + Kipris.messages[doc.originalLookupError];
+        state.append(lookupError);
+      }
       const actions = document.createElement('div');
       actions.className = 'code-gen-row';
       if (doc.hasFile) {
@@ -158,7 +163,7 @@ class PatentPanel {
         actions.append(this.panel.coding.button('텍스트 추출 재시도',
           () => this.caseAction('kipris_extract_retry', { documentId: doc.id }, record.application)));
       }
-      if (!busy && !doc.hasFile && Kipris.apiPdfKinds.includes(doc.kind) && doc.status !== 'missing_trial_number') {
+      if (!busy && Kipris.canLookupOriginal(doc)) {
         const fullLookup = Kipris.isGazette(doc.kind) && !doc.gazetteNumber && !doc.gazetteLocator;
         actions.append(this.panel.coding.button(fullLookup ? '전체 서류 다시 조회' : '원문 다시 조회',
           () => this.caseAction('kipris_start', fullLookup ? {} : { documentId: doc.id }, record.application)));

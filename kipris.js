@@ -71,6 +71,8 @@ const Kipris = (() => {
   const isGazette = kind => kind === 'PUB' || kind === 'REG';
   const isCorrectionGazette = kind => kind === 'CORR_PUB' || kind === 'CORR_REG';
   const isTrialDecision = kind => kind === 'TRIAL_DECISION' || kind === 'TRIAL_SUPPLEMENT';
+  const canLookupOriginal = doc => !!doc && apiPdfKinds.includes(doc.kind) && doc.status !== 'missing_trial_number'
+    && (!doc.hasFile || isCorrectionGazette(doc.kind) && doc.status === 'identity');
 
   class Error extends globalThis.Error {
     constructor(code, extra = {}) {
@@ -534,5 +536,5 @@ const Kipris = (() => {
   return { Error, messages, documentStatus, historyDocumentStatus, applicationNumber, documentType, normalizedTitle, safePdfURL, getHistory, pdfLocations,
     getClaimHistory, registeredClaims, download, checkPdfBytes, inspectPdf, citations, maxPdf, apiPdfKinds,
     canRetryExtraction, isGazette, gazetteNumberInPdf, isCorrectionGazette, isTrialDecision,
-    correctionLocations, trialDecisionLocations, validTrialNumber, trialSummary };
+    correctionLocations, trialDecisionLocations, validTrialNumber, trialSummary, canLookupOriginal };
 })();

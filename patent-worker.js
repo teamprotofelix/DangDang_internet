@@ -181,15 +181,29 @@ const PatentWorker = (() => {
 
     async function fetchDocument(doc, path) {
       signal.throwIfAborted();
+      const replacing = doc.hasFile && Kipris.isCorrectionGazette(doc.kind) && doc.status === 'identity';
       try {
         if (!path) throw new Kipris.Error('missing_path');
         const bytes = await Kipris.download(path, signal);
         signal.throwIfAborted();
-        await savePdf(record, doc, bytes, 'KIPRIS PLUS');
+        if (replacing) {
+          const inspection = await Kipris.inspectPdf(bytes, app, doc, extract);
+          signal.throwIfAborted();
+          if (inspection.status !== 'verified' || !inspection.identityVerified) throw new Kipris.Error(inspection.status);
+          const updated = { ...doc, ...inspection, source: 'KIPRIS PLUS',
+            correctionIdentityVersion, originalLookupError: null };
+          const docs = record.docs.map(item => item === doc ? updated : item);
+          await PatentStore.saveWithFile({ ...record, docs, report: null }, doc.id, bytes);
+          Object.assign(doc, updated);
+          record.report = null;
+        } else {
+          await savePdf(record, doc, bytes, 'KIPRIS PLUS');
+        }
         signal.throwIfAborted();
       } catch (error) {
         signal.throwIfAborted();
-        Object.assign(doc, { status: reason(error), pages: [], pageCount: null, identityVerified: false });
+        if (replacing) doc.originalLookupError = reason(error);
+        else Object.assign(doc, { status: reason(error), pages: [], pageCount: null, identityVerified: false });
       }
       await PatentStore.save(record);
     }
@@ -339,13 +353,17 @@ const PatentWorker = (() => {
           record.docs.push(doc);
           record.report = null;
         }
-        if (doc.hasFile) continue;
-        if (row.conflict) doc.status = 'identity';
-        else await fetchDocument(doc, row.path);
+        if (!Kipris.canLookupOriginal(doc)) continue;
+        if (row.conflict) {
+          if (doc.hasFile) doc.originalLookupError = 'identity';
+          else doc.status = 'identity';
+        } else await fetchDocument(doc, row.path);
       }
-      for (const doc of record.docs.filter(doc => Kipris.isCorrectionGazette(doc.kind) && !doc.hasFile
+      for (const doc of record.docs.filter(doc => Kipris.isCorrectionGazette(doc.kind) && Kipris.canLookupOriginal(doc)
         && (!onlyId || doc.id === onlyId) && !byId.has(doc.id))) {
-        doc.status = lookupError || (locations.length ? 'identity' : 'not_found');
+        const status = lookupError || (locations.length ? 'identity' : 'not_found');
+        if (doc.hasFile) doc.originalLookupError = status;
+        else doc.status = status;
       }
       await PatentStore.save(record);
     }
@@ -507,7 +525,7 @@ const PatentWorker = (() => {
       if (localRetry && (data.diagnose || !onlyDoc?.hasFile || !Kipris.canRetryExtraction(onlyDoc.status))) {
         return { error: '텍스트를 다시 추출할 저장된 PDF를 선택해 주세요.' };
       }
-      if (!localRetry && onlyId && (data.diagnose || !onlyDoc || onlyDoc.hasFile || !Kipris.apiPdfKinds.includes(onlyDoc.kind))) {
+      if (!localRetry && onlyId && (data.diagnose || !Kipris.canLookupOriginal(onlyDoc))) {
         return { error: 'API로 다시 조회할 원문을 선택해 주세요.' };
       }
       if (data.diagnose === true) {
