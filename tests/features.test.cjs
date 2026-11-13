@@ -770,6 +770,15 @@ test('심판 문서와 증서·고객번호 정정이 심사 시점 청구항에
   assert.match(Kipris.documentStatus({ kind: 'REG', status: 'not_found' }), /원문 PDF가 조회되지 않음/);
 });
 
+test('권리범위확인심결(특실의)은 심결문으로 분류하되 심판 청구서와 보정서는 구분', () => {
+  const { Kipris } = testRuntime();
+  const trial = { stage: '심판', trialNumber: '2099100000123' };
+  assert.equal(Kipris.documentType('권리범위확인심결(특실의)', trial), 'TRIAL_DECISION');
+  assert.equal(Kipris.documentType('[심판] 권리범위 확인심결（특실의）'), 'TRIAL_DECISION');
+  assert.equal(Kipris.documentType('권리범위확인심판청구서', trial), 'TRIAL_FILING');
+  assert.equal(Kipris.documentType('[심판]보정서', trial), 'TRIAL_FILING');
+});
+
 test('정정공고와 심결문은 공식 식별자로 조회하고 PDF의 출원·종류·번호를 교차 검증', async () => {
   const trialNumber = '2099100000123';
   const urls = [];
@@ -811,6 +820,12 @@ test('정정공고와 심결문은 공식 식별자로 조회하고 PDF의 출�
   const header = '정정공고(등록)\n출원번호 ' + app + '\n등록번호 10-9999999\n2099.01.02';
   assert.equal((await inspect(corrected, header)).status, 'identity');
   assert.equal((await inspect(corrected, header + '\n정정공고순번 2')).status, 'verified');
+  const singleton = { ...corrected, sameDateCorrection: false };
+  assert.equal((await inspect(singleton, header)).status, 'verified');
+  assert.equal((await inspect(singleton, header + '\n정정공고일련번호 1')).status, 'identity');
+  assert.equal((await inspect(singleton, header + '\n정정공보 일련번호: ００２')).status, 'verified');
+  assert.equal((await inspect(singleton, header + '\n정정공고순번 1\n정정공고순번 2')).status, 'identity');
+  assert.equal((await inspect(corrected, header + '\n정정공고번호 10-9999999')).status, 'identity');
 });
 
 test('코딩은 명시 언어의 기본 확장자와 여러 언어의 하위 폴더를 보존', () => {

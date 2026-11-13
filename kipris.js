@@ -275,10 +275,11 @@ const Kipris = (() => {
     const text = String(title || '').normalize('NFKC').trim();
     const prefixes = [...text.matchAll(/\[([^\]]+)\]/g)].map(match => match[1]).join(' ');
     const name = normalizedTitle(text);
-    if (validTrialNumber(trialNumber) || /심판|심결/.test(stage + prefixes)
+    const scopeDecision = /^권리범위확인심결(?:\([^()]+\))?$/.test(name);
+    if (scopeDecision || validTrialNumber(trialNumber) || /심판|심결/.test(stage + prefixes)
       || /^(?:심판|심결|정정심판|무효심판|거절결정불복)/.test(name)) {
       if (/경정결정문|경정결정서/.test(name)) return 'TRIAL_SUPPLEMENT';
-      return /심결문|심결서|심판결문|심결.*통지|^심결$/.test(name) ? 'TRIAL_DECISION' : 'TRIAL_FILING';
+      return scopeDecision || /심결문|심결서|심판결문|심결.*통지|^심결$/.test(name) ? 'TRIAL_DECISION' : 'TRIAL_FILING';
     }
     if (/증서|등록증|고객번호|출원인코드|대리인코드|재발급/.test(prefixes + name)) return 'OTHER';
     if (/선행기술조사.*(?:보고|결과|의뢰)/.test(name)) return 'SEARCH_REPORT';
@@ -476,9 +477,12 @@ const Kipris = (() => {
     if (bytes.length < 128 || !trailer.includes('%%EOF')) throw new Error('pdf_incomplete');
   }
 
-  function correctionSerial(text) {
-    const compact = text.normalize('NFKC').replace(/\s/g, '');
-    return compact.match(/정정(?:공고|공보)(?:일련|순번|연번|회차|번호)[:：]?(\d+)(?![-\d])/)?.[1];
+  function correctionSerialMatches(text, doc) {
+    const labels = text.normalize('NFKC').matchAll(
+      /정\s*정\s*공\s*[고보]\s*(?:일\s*련(?:\s*번\s*호)?|순\s*번|연\s*번|회\s*차|번\s*호)[ \t:：]*(\d+)(?![ \t]*-|\d)/g);
+    const serials = [...labels].map(match => match[1].replace(/^0+(?=\d)/, ''));
+    return serials.length ? serials.every(serial => serial === doc.correctionSerial?.replace(/^0+(?=\d)/, ''))
+      : !doc.sameDateCorrection;
   }
 
   async function inspectPdf(bytes, app, doc, extract) {
@@ -512,7 +516,7 @@ const Kipris = (() => {
       : /공개/.test(compact) && !!gazetteNumberInPdf('PUB', first));
     const idOk = isTrialDecision(doc.kind) ? trialId && trialTitle && dates.includes(doc.decisionDate || doc.date)
       : isCorrectionGazette(doc.kind) ? compact.includes(app) && correctionTitle && dates.includes(doc.date)
-        && (!doc.sameDateCorrection || correctionSerial(first) === doc.correctionSerial)
+        && correctionSerialMatches(first, doc)
       : doc.kind === 'CITATION'
       ? first.normalize('NFKC').toUpperCase().replace(/[^A-Z0-9]/g, '').includes(doc.citationNumber)
       : compact.includes(app) && titleOk && (isGazette(doc.kind)

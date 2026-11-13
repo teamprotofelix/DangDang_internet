@@ -18,7 +18,7 @@ const regPdf = testPdf(['등록특허공보', '출원번호 ' + registeredApp, '
   '등록일자 2099.01.05', '전체 청구항 수 : 총 1 항', '청구항 1', '센서 장치']);
 const trialPdf = testPdf(['심결문', '사건 2099당123', '2099.01.09']);
 const correctionPdf = testPdf(['정정공고(공개)', '출원번호 ' + registeredApp,
-  '공개번호 1099990000004', '2099.01.11']);
+  '공개번호 1099990000004', '2099.01.11', '정정공고일련번호 2']);
 const rotatingApp = '1099990000002';
 const rotatingNumber = '1099990000013';
 const rotatingPdf = testPdf(['공개특허공보', '출원번호 ' + rotatingApp, '공개번호 ' + rotatingNumber]);
@@ -43,7 +43,7 @@ async function main() {
     page.on('dialog', dialog => dialog.dismiss());
     await worker.evaluate(({ app, send, date, pdf, pubNumbers, pubPdfs, opinionId, rotatingApp, rotatingPdf, registeredApp, registration, trial, regDecisionId, regPdf, trialPdf, correctionPdf }) => {
       const fetchOriginal = globalThis.fetch;
-      globalThis.fixtureRequests = { kipris: 0, model: 0, pdf: 0, rotating: 0 };
+      globalThis.fixtureRequests = { kipris: 0, model: 0, pdf: 0, rotating: 0, correction: 0, correctionPdfs: 0, trial: 0 };
       const createOffscreen = chrome.offscreen.createDocument.bind(chrome.offscreen);
       globalThis.fixtureParserUnavailable = true;
       globalThis.fixturePanelUnavailable = true;
@@ -80,21 +80,27 @@ async function main() {
               + row(regDecisionId, '등록결정서', '20990104', '출원')
               + row('119999000000103', '[심판]의견서', '20990106', '심판', trial)
               + row('119999000000104', '[심판]보정서', '20990107', '심판', trial)
-              + row('119999000000105', '심결문', '20990110', '심판', trial)
+              + row('119999000000105', '권리범위확인심결(특실의)', '20990110', '심판', trial)
               + row('119999000000106', '[증서재발급]등록증 정정신청서', '20990110', '등록')
               + '</items>');
             if (url.pathname.includes('IntermediateDocumentRGService')) return new Response(null, { status: 403 });
             if (url.pathname.includes('getAnnFullTextInfoSearch')) return response('<items><item><registrationNumber>'
               + registration + '</registrationNumber><path>https://plus.kipris.or.kr/registration.pdf</path></item></items>');
-            if (url.pathname.endsWith('/revisionfullDocPDFInfo')) return response('<items><revisionfullDocPDFInfo>'
-              + '<applicationNumber>' + registeredApp + '</applicationNumber><number>1</number><typeCode>B0101</typeCode>'
-              + '<typeDescription>정정공보(공개)전문</typeDescription><date>20990111</date>'
-              + '<path>https://plus.kipris.or.kr/correction.pdf</path></revisionfullDocPDFInfo></items>');
+            if (url.pathname.endsWith('/revisionfullDocPDFInfo')) {
+              const attempt = ++globalThis.fixtureRequests.correction;
+              const numbers = attempt === 1 ? [1] : [2, 1];
+              return response('<items>' + numbers.map(serial => '<revisionfullDocPDFInfo>'
+                + '<applicationNumber>' + registeredApp + '</applicationNumber><number>' + serial + '</number><typeCode>B0101</typeCode>'
+                + '<typeDescription>정정공보(공개)전문</typeDescription><date>20990111</date>'
+                + '<path>https://plus.kipris.or.kr/correction.pdf?ticket=' + attempt + '-' + serial
+                + '</path></revisionfullDocPDFInfo>').join('') + '</items>');
+            }
             if (url.pathname.endsWith('/patentClaimInfo')) return response('<items><claim>센서 장치</claim></items>');
             return response('<items/>');
           }
           if (url.pathname.endsWith('/getJudDocumentInfoSearch') && url.searchParams.get('trialNumber') === trial) {
             if (url.searchParams.has('applicationNumber')) throw new Error('Fixture: wrong trial identifier');
+            globalThis.fixtureRequests.trial++;
             return response('<item><fileName>' + trial + '.PDF</fileName><openYN>Y</openYN>'
               + '<path>https://plus.kipris.or.kr/trial.pdf</path></item>');
           }
@@ -105,7 +111,10 @@ async function main() {
           }
           if (url.pathname === '/registration.pdf') return new Response(regPdf);
           if (url.pathname === '/trial.pdf') return new Response(trialPdf);
-          if (url.pathname === '/correction.pdf') return new Response(correctionPdf);
+          if (url.pathname === '/correction.pdf') {
+            globalThis.fixtureRequests.correctionPdfs++;
+            return new Response(correctionPdf);
+          }
           if (url.searchParams.get('applicationNumber') === rotatingApp) {
             if (!url.pathname.includes('getPubFullTextInfoSearch')) return response('<items/>');
             const ticket = ++globalThis.fixtureRequests.rotating;
@@ -464,7 +473,7 @@ async function main() {
     await page.fill('#patent-application', registeredApp);
     await page.click('#patent-lookup');
     await page.getByRole('row').filter({ hasText: '공개공보' }).getByText('이 문서의 원문 PDF가 조회되지 않음').waitFor();
-    for (const title of ['등록공보', '심결문', '정정공보(공개)']) {
+    for (const title of ['등록공보', '권리범위확인심결(특실의)']) {
       await page.getByRole('row').filter({ hasText: title }).getByText('원문 검증 완료', { exact: false }).waitFor();
     }
     await page.getByRole('row').filter({ hasText: regDecisionId }).getByText('해당 상품 이용 권한 필요').waitFor();
@@ -479,6 +488,35 @@ async function main() {
     assert.ok(registrationCheck.kinds.includes('TRIAL_DECISION'));
     assert.ok(!registrationCheck.kinds.includes('AM') && !registrationCheck.kinds.includes('OPINION'));
     assert.equal(registrationCheck.version, 'verified');
+    const correction1 = 'CORR_PUB-B0101-20990111-1';
+    const correction2 = 'CORR_PUB-B0101-20990111-2';
+    const firstCorrection = page.getByRole('row').filter({ hasText: correction1 });
+    const secondCorrection = page.getByRole('row').filter({ hasText: correction2 });
+    await firstCorrection.getByText('PDF의 문서 식별자를 확인하지 못했거나 응답이 불일치함', { exact: false }).waitFor();
+    await firstCorrection.getByRole('button', { name: 'PDF 다운로드', exact: true }).waitFor();
+    assert.equal(await worker.evaluate(() => globalThis.fixtureRequests.trial), 1);
+
+    // Simulate a persisted false positive from the previous PR commit.
+    await worker.evaluate(async ({ app, id }) => {
+      const record = await PatentStore.get(app);
+      const doc = record.docs.find(item => item.id === id);
+      Object.assign(doc, { status: 'verified', identityVerified: true, sameDateCorrection: false,
+        pageCount: 1, pages: [{ page: 1, text: '정정공고일련번호 2' }] });
+      delete doc.correctionIdentityVersion;
+      await PatentStore.save(record);
+    }, { app: registeredApp, id: correction1 });
+    await page.click('#patent-lookup');
+    await secondCorrection.getByText('원문 검증 완료', { exact: false }).waitFor();
+    await page.waitForFunction(() => !document.querySelector('#patent-start').disabled);
+    await firstCorrection.getByText('PDF의 문서 식별자를 확인하지 못했거나 응답이 불일치함', { exact: false }).waitFor();
+    const correctionCheck = await worker.evaluate(async app => {
+      const record = await PatentStore.get(app);
+      return { pdfFetches: globalThis.fixtureRequests.correctionPdfs,
+        rows: record.docs.filter(doc => doc.kind === 'CORR_PUB').map(doc =>
+          [doc.correctionSerial, doc.status, doc.identityVerified, doc.sameDateCorrection]) };
+    }, registeredApp);
+    assert.deepEqual(correctionCheck.rows, [['1', 'identity', false, true], ['2', 'verified', true, true]]);
+    assert.equal(correctionCheck.pdfFetches, 2);
     assert.deepEqual(errors, []);
     console.log('Chromium extension smoke passed: legacy migration, settings, code ZIP, PDF extraction, consent, diagnosis, restore, delete.');
   } finally {

@@ -3,6 +3,8 @@ const PatentWorker = (() => {
   const active = new Map();
   const keyName = CONFIG.storageKeys.kiprisKey;
   let offscreenOpening;
+  const historyClassification = 3;
+  const correctionIdentityVersion = 1;
 
   async function extract(bytes) {
     let binary = '';
@@ -82,6 +84,7 @@ const PatentWorker = (() => {
 
   async function inspectStoredPdf(record, doc, bytes) {
     const inspection = await Kipris.inspectPdf(bytes, record.application, doc, extract);
+    if (Kipris.isCorrectionGazette(doc.kind)) inspection.correctionIdentityVersion = correctionIdentityVersion;
     const updated = { ...doc, ...inspection };
     const report = doc.status === inspection.status ? record.report : null;
     const docs = record.docs.map(item => item === doc ? updated : item);
@@ -125,14 +128,14 @@ const PatentWorker = (() => {
 
   async function collect(record, key, signal, onlyId) {
     const app = record.application;
-    const cached = record.historyClassification === 2 && ['complete', 'empty'].includes(record.historyStatus)
+    const cached = record.historyClassification === historyClassification && ['complete', 'empty'].includes(record.historyStatus)
       && Date.now() - Date.parse(record.queriedAt) < 10 * 60 * 1000;
     if (!cached && !onlyId) {
       record.queriedAt = new Date().toISOString();
       try {
         const { status, rows } = await Kipris.getHistory(app, key, signal);
         record.historyStatus = status;
-        record.historyClassification = 2;
+        record.historyClassification = historyClassification;
         const old = new Map(record.docs.map(doc => [doc.id, doc]));
         record.docs = rows.map(row => {
           const saved = old.get(row.id);
@@ -281,8 +284,7 @@ const PatentWorker = (() => {
     }
 
     const requested = onlyId && record.docs.find(doc => doc.id === onlyId);
-    if ((!onlyId && (!cached || !['complete', 'not_found'].includes(record.correctionStatus)))
-      || requested && Kipris.isCorrectionGazette(requested.kind)) {
+    if (!onlyId || requested && Kipris.isCorrectionGazette(requested.kind)) {
       let locations = [];
       let lookupError;
       try { locations = await Kipris.correctionLocations(app, key, signal); }
@@ -299,19 +301,45 @@ const PatentWorker = (() => {
         if (existing && existing.path !== row.path) existing.conflict = true;
         else if (!existing) byId.set(id, row);
       }
+      const knownCorrections = new Map(record.docs.filter(doc => Kipris.isCorrectionGazette(doc.kind))
+        .map(doc => [doc.id, doc]));
+      const correctionsByDate = new Map();
+      for (const doc of new Map([...knownCorrections, ...byId]).values()) {
+        const group = doc.kind + ':' + doc.date;
+        correctionsByDate.set(group, (correctionsByDate.get(group) || 0) + 1);
+      }
+      const recheck = [];
+      for (const doc of knownCorrections.values()) {
+        const row = byId.get(doc.id);
+        const serial = row?.serial || doc.correctionSerial;
+        const sameDate = doc.sameDateCorrection === true || correctionsByDate.get(doc.kind + ':' + doc.date) > 1;
+        const changed = doc.sameDateCorrection !== sameDate || doc.correctionSerial !== serial;
+        Object.assign(doc, { correctionSerial: serial, sameDateCorrection: sameDate });
+        if (doc.hasFile && (changed || doc.correctionIdentityVersion !== correctionIdentityVersion)) {
+          // Persist the invalidation before extracting any files under the updated identity requirements.
+          Object.assign(doc, { status: 'pdf_extract_pending', pages: [], pageCount: null, identityVerified: false });
+          record.report = null;
+          recheck.push(doc);
+        }
+      }
+      if (recheck.length) await PatentStore.save(record);
+      for (const doc of recheck) {
+        signal.throwIfAborted();
+        const bytes = await PatentStore.file(app, doc.id);
+        if (bytes) await inspectStoredPdf(record, doc, bytes);
+      }
+
       for (const [id, row] of byId) {
         if (onlyId && id !== onlyId) continue;
         const title = row.kind === 'CORR_PUB' ? '정정공보(공개)' : '정정공보(등록)';
-        const existing = record.docs.find(doc => doc.id === id);
-        const doc = existing || { id, title, kind: row.kind, date: row.date, status: 'pending' };
+        const existing = knownCorrections.get(id);
+        const doc = existing || { id, title, kind: row.kind, date: row.date, status: 'pending',
+          correctionSerial: row.serial, sameDateCorrection: correctionsByDate.get(row.kind + ':' + row.date) > 1 };
         if (!existing) {
           record.docs.push(doc);
           record.report = null;
         }
         if (doc.hasFile) continue;
-        doc.correctionSerial = row.serial;
-        doc.sameDateCorrection = [...byId.values()].some(other =>
-          other !== row && other.kind === row.kind && other.date === row.date);
         if (row.conflict) doc.status = 'identity';
         else await fetchDocument(doc, row.path);
       }
