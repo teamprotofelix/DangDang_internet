@@ -40,7 +40,9 @@ const CodeProjects = (() => {
   }
 
   function parse(raw, preferred = 'auto', previous = []) {
+    const requested = language(preferred);
     const files = [];
+    const explicitNames = [];
     const lines = String(raw || '').replace(/\r\n/g, '\n').split('\n');
     let block = null;
     let hint = '';
@@ -51,12 +53,13 @@ const CodeProjects = (() => {
           const index = files.length;
           const proposed = block.hint;
           const extension = proposed.split('/').at(-1)?.match(/\.([a-z0-9]+)$/i)?.[1];
-          const lang = language(block.tag || (preferred !== 'auto' ? preferred : extension) || 'text');
+          const lang = language(block.tag || extension || (requested !== 'auto' && requested) || 'text');
           const name = filename(proposed, lang, index);
-          if (content.trim() && (proposed || (block.tag && lang !== 'text'))) {
+          if (content.trim() && (proposed || block.tag && lang !== 'text' || requested && requested !== 'auto')) {
             if (files.some(file => pathsConflict(file.name, name))) {
               throw new Error(`응답에 같은 파일명이 반복됐습니다. 다시 생성해 주세요. (${name})`);
             }
+            explicitNames.push(!!proposed);
             files.push({ name, language: lang, content, mime: mime(lang),
               status: previous.some(file => file.name === name) ? 'modified' : 'created', downloadable: true });
           }
@@ -78,6 +81,9 @@ const CodeProjects = (() => {
       }
     }
     if (block) throw new Error('마지막 코드 블록이 닫히지 않았습니다. 다시 생성해 주세요.');
+    if (files.length === 1 && requested && requested !== 'auto' && !explicitNames[0]) {
+      files[0].name = filename('', requested);
+    }
     return files;
   }
 
@@ -111,5 +117,5 @@ const CodeProjects = (() => {
     return { content: result.content, files: parse(result.content, preferred, files) };
   }
 
-  return { languages, filename, pathsConflict, parse, migrate, generate };
+  return { languages, language, filename, pathsConflict, parse, migrate, generate };
 })();

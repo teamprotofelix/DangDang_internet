@@ -57,17 +57,19 @@ const PatentRules = (() => {
   function restoreClaims(history, rows, target) {
     if (!history?.events?.length || !history.changes?.length || !target.date) return failure('청구항 변동 이력 또는 기준일 없음');
     if (rows.some(row => row.kind === 'AM' && row.date === target.date)) return failure('통지와 보정이 같은 날이라 선후 관계 미확인');
-    const events = history.events.filter(row => row.date < target.date)
+    const byNumber = new Map(rows.map(row => [row.id, row]));
+    const eventsInExamination = history.events.filter(event =>
+      ![byNumber.get(event.id)?.kind, Kipris.documentType(event.title)].some(kind => kind?.startsWith('TRIAL_')));
+    const events = eventsInExamination.filter(row => row.date < target.date)
       .sort((a, b) => a.date.localeCompare(b.date) || Number(a.serial) - Number(b.serial));
     if (!events.length || !/^(?:(?:특허|실용신안)?출원서|국내단계|국내서면|번역문|최초출원|국내출원)/.test(Kipris.normalizedTitle(events[0].title))) {
       return failure('최초 출원 또는 국내단계 청구항 근거 없음');
     }
-    if (history.events.some(row => !row.date || row.date === target.date)
+    if (eventsInExamination.some(row => !row.date || row.date === target.date)
         || events.some(row => !row.id || !/^\d+$/.test(row.serial))
         || new Set(events.map(row => row.serial)).size !== events.length) {
       return failure('접수일·접수번호·순서 검증 불가');
     }
-    const byNumber = new Map(rows.map(row => [row.id, row]));
     if (events.some(event => !byNumber.has(event.id) || byNumber.get(event.id).date !== event.date)
       || rows.some(row => row.kind === 'AM' && row.date < target.date && !events.some(event => event.id === row.id))
       || history.changes.some(change => !history.events.some(event => event.serial === change.serial && event.id === change.id))) {
@@ -101,7 +103,7 @@ const PatentRules = (() => {
 
   function verifyRegisteredClaims(raw, gazette, rows) {
     if (!Array.isArray(raw) || !raw.length || gazette?.status !== 'verified') return failure('등록공보와 청구항 API가 모두 필요함');
-    if (rows.some(row => row.kind === 'CORRECTION' || row.kind === 'RD')) return failure('정정 또는 거절·등록 경과의 기준 시점 확인 필요');
+    if (rows.some(row => ['CORRECTION', 'CORR_REG', 'RD'].includes(row.kind))) return failure('정정 또는 거절·등록 경과의 기준 시점 확인 필요');
     const full = gazette.pages.map(page => page.text).join('\n');
     const count = Number(full.match(/(?:전체|총)\s*청구항\s*(?:수\s*[:：]?)?\s*(?:총\s*)?(\d+)\s*항?/)?.[1]);
     const registeredAt = full.match(/(?:\(24\)\s*)?등\s*록\s*일\s*자\s*[:：]?\s*(\d{4}\s*년\s*\d{1,2}\s*월\s*\d{1,2}\s*일|\d{4}[.-]\d{2}[.-]\d{2})/)?.[1];

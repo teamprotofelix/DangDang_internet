@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const { readFileSync } = require('node:fs');
 const { test } = require('node:test');
 const vm = require('node:vm');
+const { testPdf } = require('./pdf-fixture.cjs');
 
 const paths = ['config.js', 'utils.js', 'api.js', 'coding.js', 'file-io.js', 'kipris.js',
   'patent-rules.js', 'patent-diagnosis.js'];
@@ -745,4 +746,95 @@ test('실제 PDF 파서가 합성 한국어 원문과 페이지 경계를 읽음
     assert.match(text, /의견제출통지서/);
     assert.match(text, /시험\s+근거\s+문장입니다\./);
   } finally { await loading.destroy(); }
+});
+
+test('심판 문서와 증서·고객번호 정정이 심사 시점 청구항에 섞이지 않음', () => {
+  const { Kipris, PatentRules } = testRuntime();
+  const title = '[심판]보정서';
+  const trial = { serial: '2', id: '202', date: '20990102', title };
+  const initial = { serial: '1', id: '201', date: '20990101', title: '[특허출원]특허출원서' };
+  assert.equal(Kipris.documentType(title), 'TRIAL_FILING');
+  assert.equal(Kipris.documentType('의견서', { stage: '심판' }), 'TRIAL_FILING');
+  assert.equal(Kipris.documentType('등록결정서', { stage: '출원', trialNumber: 'N/A' }), 'RG');
+  assert.equal(Kipris.documentType('[등록증재발급]등록증 정정신청서'), 'OTHER');
+  assert.equal(Kipris.documentType('[출원인코드]고객번호 정정'), 'OTHER');
+  assert.equal(Kipris.documentType('청구범위 정정'), 'CORRECTION');
+  const rows = [{ ...initial, kind: 'APP' }, { ...trial, kind: 'TRIAL_FILING' }];
+  const result = PatentRules.restoreClaims({ events: [initial, trial], changes: [
+    { ...initial, claim: '1', change: '신규', text: '센서 장치' },
+    { ...trial, claim: '1', change: '수정', text: '심판 문언' }
+  ] }, rows, { date: '20990102' });
+  assert.equal(result.status, 'reconstructed');
+  assert.equal(result.claims[0].text, '센서 장치');
+  assert.match(Kipris.documentStatus({ kind: 'OPINION', status: 'manual' }), /원문 PDF 미제공/);
+  assert.match(Kipris.documentStatus({ kind: 'REG', status: 'not_found' }), /원문 PDF가 조회되지 않음/);
+});
+
+test('권리범위확인심결(특실의)은 심결문으로 분류하되 심판 청구서와 보정서는 구분', () => {
+  const { Kipris } = testRuntime();
+  const trial = { stage: '심판', trialNumber: '2099100000123' };
+  assert.equal(Kipris.documentType('권리범위확인심결(특실의)', trial), 'TRIAL_DECISION');
+  assert.equal(Kipris.documentType('[심판] 권리범위 확인심결（특실의）'), 'TRIAL_DECISION');
+  assert.equal(Kipris.documentType('권리범위확인심판청구서', trial), 'TRIAL_FILING');
+  assert.equal(Kipris.documentType('[심판]보정서', trial), 'TRIAL_FILING');
+});
+
+test('정정공고와 심결문은 공식 식별자로 조회하고 PDF의 출원·종류·번호를 교차 검증', async () => {
+  const trialNumber = '2099100000123';
+  const urls = [];
+  const { Kipris } = testRuntime(async url => {
+    const request = new URL(url);
+    urls.push(request);
+    if (request.pathname.endsWith('/revisionfullDocPDFInfo')) return new Response(xml(
+      '<items><revisionfullDocPDFInfo><applicationNumber>' + app + '</applicationNumber>'
+      + '<number>2</number><date>20990102</date><typeCode>B0102</typeCode><typeDescription>정정공보(등록)전문</typeDescription>'
+      + '<path>/correction.pdf</path></revisionfullDocPDFInfo></items>'));
+    if (request.pathname.endsWith('/trialBibliographicSummaryInfo')) return new Response(xml(
+      '<items><trialBibliographicSummaryInfo><TrialNumber>' + trialNumber + '</TrialNumber>'
+      + '<ApplicationNumber>' + app + '</ApplicationNumber><TrialNumberName>2099당123</TrialNumberName>'
+      + '<TrialdecisionDate>20990102</TrialdecisionDate></trialBibliographicSummaryInfo></items>'));
+    return new Response(xml('<item><fileName>' + trialNumber + '.PDF</fileName><openYN>Y</openYN><path>/trial.pdf</path></item>'));
+  });
+  const signal = new AbortController().signal;
+  const key = 'fixture';
+  const [correction] = await Kipris.correctionLocations(app, key, signal);
+  const decision = { kind: 'TRIAL_DECISION', trialNumber, date: '20990103' };
+  const [location] = await Kipris.trialDecisionLocations(decision, app, key, signal);
+  const summary = await Kipris.trialSummary(decision, app, key, signal);
+  await assert.rejects(Kipris.trialDecisionLocations({ ...decision, trialNumber: app }, app, key, signal),
+    { code: 'missing_trial_number' });
+  assert.equal(location.path, '/trial.pdf');
+  assert.equal(correction.kind, 'CORR_REG');
+  assert.equal(urls[0].searchParams.get('applicationNumber'), app);
+  assert.equal(urls[0].searchParams.get('accessKey'), key);
+  assert.equal(urls[1].searchParams.get('trialNumber'), trialNumber);
+  assert.equal(urls[1].searchParams.has('applicationNumber'), false);
+  assert.equal(urls[1].searchParams.get('ServiceKey'), key);
+  assert.equal(urls[2].searchParams.get('TrialNumber'), trialNumber);
+  const bytes = new TextEncoder().encode(testPdf());
+  const inspect = (doc, text) => Kipris.inspectPdf(bytes, app, doc, async () => ({ pageCount: 1, pages: [{ page: 1, text }] }));
+  const original = { ...decision, ...summary };
+  assert.equal((await inspect(original, '심결문\n사건 2099당123\n2099.01.02')).status, 'verified');
+  assert.equal((await inspect(original, '심결문\n사건 2099당1234\n2099.01.02')).status, 'identity');
+  const corrected = { ...correction, sameDateCorrection: true, correctionSerial: '2' };
+  const header = '정정공고(등록)\n출원번호 ' + app + '\n등록번호 10-9999999\n2099.01.02';
+  assert.equal((await inspect(corrected, header)).status, 'identity');
+  assert.equal((await inspect(corrected, header + '\n정정공고순번 2')).status, 'verified');
+  const singleton = { ...corrected, sameDateCorrection: false };
+  assert.equal((await inspect(singleton, header)).status, 'verified');
+  assert.equal((await inspect(singleton, header + '\n정정공고일련번호 1')).status, 'identity');
+  assert.equal((await inspect(singleton, header + '\n정정공보 일련번호: ００２')).status, 'verified');
+  assert.equal((await inspect(singleton, header + '\n정정공고순번 1\n정정공고순번 2')).status, 'identity');
+  assert.equal((await inspect(corrected, header + '\n정정공고번호 10-9999999')).status, 'identity');
+});
+
+test('코딩은 명시 언어의 기본 확장자와 여러 언어의 하위 폴더를 보존', () => {
+  const { CodeProjects } = testRuntime();
+  const one = CodeProjects.parse('```\nprint("hi")\n```', 'python');
+  assert.equal(one[0].name, 'file-1.py');
+  const project = CodeProjects.parse('File: 화면/index.html\n```html\n<p>Hi</p>\n```\n'
+    + 'File: 화면/app.js\n```javascript\nconsole.log(1)\n```', 'html');
+  assert.deepEqual(plain(project.map(file => [file.name, file.language])), [
+    ['화면/index.html', 'html'], ['화면/app.js', 'javascript']
+  ]);
 });

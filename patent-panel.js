@@ -27,8 +27,6 @@ class PatentPanel {
     document.getElementById('patent-zip').onclick = () => this.downloadZip();
     document.querySelectorAll('[data-patent-format]').forEach(button =>
       button.onclick = () => this.downloadReport(button.dataset.patentFormat));
-    this.fileInput = document.getElementById('patent-attachment');
-    this.fileInput.onchange = () => this.attach();
     this.bindKey();
     chrome.storage.local.get('kipris_last_application').then(data => {
       if (!this.input.value && data.kipris_last_application) this.input.value = data.kipris_last_application;
@@ -123,6 +121,11 @@ class PatentPanel {
     document.querySelectorAll('[data-patent-format]').forEach(button => { button.disabled = !record?.report; });
     this.body.textContent = record?.report ? PatentDiagnosis.format(record.report) : '';
     this.list.replaceChildren();
+    if (record?.correctionStatus && !['complete', 'not_found'].includes(record.correctionStatus)) {
+      const status = document.createElement('p');
+      status.textContent = '정정공보 · ' + (Kipris.messages[record.correctionStatus] || record.correctionStatus);
+      this.list.append(status);
+    }
     if (!record?.docs.length) return;
     const table = document.createElement('table');
     table.className = 'patent-table';
@@ -141,31 +144,29 @@ class PatentPanel {
       title.textContent = doc.title;
       const details = document.createElement('div');
       const number = Kipris.isGazette(doc.kind) ? doc.gazetteNumber : doc.id;
-      details.textContent = [doc.date, number, doc.processing].filter(Boolean).join(' · ');
+      details.textContent = [doc.date, number, Kipris.validTrialNumber(doc.trialNumber) && '심판번호 ' + doc.trialNumber, doc.processing].filter(Boolean).join(' · ');
       label.append(title, details);
       const state = row.insertCell();
-      state.textContent = (Kipris.messages[doc.status] || doc.status) + (doc.pageCount ? ` · ${doc.pageCount}쪽` : '');
+      state.textContent = Kipris.documentStatus(doc) + (doc.pageCount ? ` · ${doc.pageCount}쪽` : '');
+      if (doc.originalLookupError) {
+        const lookupError = document.createElement('div');
+        lookupError.textContent = '원문 다시 조회 · ' + Kipris.messages[doc.originalLookupError];
+        state.append(lookupError);
+      }
       const actions = document.createElement('div');
       actions.className = 'code-gen-row';
       if (doc.hasFile) {
-        const label = doc.status === 'verified' ? 'PDF 다운로드' : '미검증 PDF 다운로드';
         actions.append(this.panel.coding.button('열기', () => this.openPdf(doc, record.application, true)),
-          this.panel.coding.button(label, () => this.openPdf(doc, record.application, false)));
+          this.panel.coding.button('PDF 다운로드', () => this.openPdf(doc, record.application, false)));
       }
       if (!busy && doc.hasFile && Kipris.canRetryExtraction(doc.status)) {
         actions.append(this.panel.coding.button('텍스트 추출 재시도',
           () => this.caseAction('kipris_extract_retry', { documentId: doc.id }, record.application)));
       }
-      if (!busy && !doc.hasFile && Kipris.apiPdfKinds.includes(doc.kind)) {
+      if (!busy && Kipris.canLookupOriginal(doc)) {
         const fullLookup = Kipris.isGazette(doc.kind) && !doc.gazetteNumber && !doc.gazetteLocator;
         actions.append(this.panel.coding.button(fullLookup ? '전체 서류 다시 조회' : '원문 다시 조회',
           () => this.caseAction('kipris_start', fullLookup ? {} : { documentId: doc.id }, record.application)));
-      }
-      if (!busy && doc.status !== 'verified' && ['APP', 'AM', 'OPINION', 'CORRECTION', 'OA', 'RD', 'RG', 'PUB', 'REG', 'CITATION'].includes(doc.kind)) {
-        actions.append(this.panel.coding.button('PDF 첨부', () => {
-          this.attachTo = { app: record.application, id: doc.id };
-          this.fileInput.click();
-        }));
       }
       state.append(actions);
     }
@@ -187,22 +188,6 @@ class PatentPanel {
       try { await chrome.tabs.create({ url }); }
       finally { setTimeout(() => URL.revokeObjectURL(url), 60000); }
     } catch (error) { this.status.textContent = error.message; }
-  }
-
-  async attach() {
-    const file = this.fileInput.files?.[0];
-    this.fileInput.value = '';
-    const target = this.attachTo;
-    if (!file || !target || target.app !== this.selected) return;
-    if (file.size > Kipris.maxPdf) { this.status.textContent = '첨부 PDF 최대 크기는 20 MB입니다.'; return; }
-    const encoded = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result).split(',')[1]);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    }).catch(() => null);
-    if (!encoded) { this.status.textContent = '첨부 PDF를 읽지 못했습니다.'; return; }
-    if (target.app === this.selected) await this.caseAction('kipris_attach', { id: target.id, encoded }, target.app);
   }
 
   async downloadZip() {

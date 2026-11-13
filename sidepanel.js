@@ -205,9 +205,12 @@ class SidePanelController {
   // ============================================================
 
   async sendMessage(overrideText) {
-    if (overrideText == null && this.coding.chatMode.checked) {
-      await this.coding.fromChat();
-      return;
+    if (overrideText == null) {
+      await this.coding.ready;
+      if (this.coding.chatMode.checked) {
+        await this.coding.fromChat();
+        return;
+      }
     }
     const text = (overrideText ?? this.messageInput.value).trim();
     if (!text || this.sending) return;
@@ -1457,7 +1460,7 @@ class SidePanelController {
     try {
       const stored = await chrome.storage.local.get(CONFIG.storageKeys.lastAppMode);
       const mode = stored[CONFIG.storageKeys.lastAppMode];
-      if (mode === 'work' || mode === 'code' || mode === 'chat') {
+      if (!this.appMode && ['work', 'code', 'chat'].includes(mode)) {
         this.setAppMode(mode);
       }
     } catch (_) { /* keep chat */ }

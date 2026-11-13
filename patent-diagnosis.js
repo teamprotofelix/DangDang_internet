@@ -80,7 +80,7 @@ const PatentDiagnosis = (() => {
         const rule = family + '-' + suffix;
         if (requires === 'final_notice' && !finalNotice) continue;
         let reason = '';
-        if (!usable(target)) reason = Kipris.messages[target.status] || '검증된 원문 없음';
+        if (!usable(target)) reason = Kipris.documentStatus(target) || '검증된 원문 없음';
         else if (!full(target)) reason = '원문의 일부 페이지를 읽지 못함';
         else if (family === 'RC' && version.status !== 'verified') reason = version.reason;
         else if (requires === 'claims' && (record.historyStatus !== 'complete' || version.status !== 'reconstructed')) {
@@ -263,7 +263,7 @@ const PatentDiagnosis = (() => {
     else if (record.collectionStatus !== 'complete' || !evaluated
       || omitted.length || findings.some(row => row.level === '확인 불가')) status = 'partial';
     return { application: record.application, queriedAt: record.queriedAt, historyStatus: record.historyStatus,
-      collectionStatus: record.collectionStatus, claimStatus: record.claimStatus,
+      collectionStatus: record.collectionStatus, correctionStatus: record.correctionStatus, claimStatus: record.claimStatus,
       registeredClaimStatus: record.registeredClaimStatus, status,
       documents: record.docs.map(({ id, title, date, kind, status, processing, size, pageCount, source, gazetteNumber }) =>
         ({ id, title, date, kind, status, processing, size, pageCount, source, gazetteNumber })),
@@ -281,11 +281,12 @@ const PatentDiagnosis = (() => {
       `이력 ${Kipris.messages[report.historyStatus] || report.historyStatus}`,
       `청구항 변동 ${Kipris.messages[report.claimStatus] || report.claimStatus || '—'}`,
       `등록청구항 ${Kipris.messages[report.registeredClaimStatus] || report.registeredClaimStatus || '—'}`,
+      ...(report.correctionStatus ? [`정정공보 ${Kipris.messages[report.correctionStatus] || report.correctionStatus}`] : []),
       ...(budget ? [`출력 예산 요청 ${budget.requested} · 호출당 적용 ${applied}`] : []),
       '', '## 문서와 확보 상태'
     ];
     for (const doc of report.documents) lines.push(
-      `- ${doc.title} · ${doc.date || '일자 미확인'} · ${doc.gazetteNumber || doc.id} · ${Kipris.messages[doc.status] || doc.status}${doc.pageCount ? ` · ${doc.pageCount}쪽` : ''}`);
+      `- ${doc.title} · ${doc.date || '일자 미확인'} · ${doc.gazetteNumber || doc.id} · ${Kipris.documentStatus(doc)}${doc.pageCount ? ` · ${doc.pageCount}쪽` : ''}`);
     lines.push('', '## 적용 청구항 판본');
     for (const [id, version] of Object.entries(report.versions)) {
       lines.push(`- ${id} · ${version.asOf || version.registeredAt || '미확인'} · ${version.claims.length}항 · ${version.reason || '등록공보와 청구항 API 대조'}`);

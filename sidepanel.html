@@ -307,7 +307,6 @@
         <p id="patent-status" role="status" aria-live="polite"></p>
         <p id="patent-history-status"></p>
         <div id="patent-docs"></div>
-        <input id="patent-attachment" type="file" accept="application/pdf,.pdf" hidden />
         <div class="code-gen-row patent-actions">
           <button id="patent-zip" class="btn-small" type="button" disabled>원문 ZIP</button>
           <button id="patent-delete" class="btn-small" type="button" disabled>이 출원 자료 삭제</button>
@@ -326,9 +325,10 @@
     <div id="code-panel" class="code-panel hidden">
       <div class="code-scroll">
         <div class="code-intro"><h2>코딩 프로젝트</h2></div>
-        <label class="code-label" for="code-language">언어 (자동 또는 직접 입력)</label>
-        <input id="code-language" class="setting-input" list="code-languages" value="auto" maxlength="60" />
-        <datalist id="code-languages"></datalist>
+        <label class="code-label" for="code-language">언어</label>
+        <select id="code-language" class="setting-input"></select>
+        <input id="code-language-custom" class="setting-input code-custom-language" aria-label="직접 입력 언어"
+               placeholder="언어 이름" maxlength="60" hidden />
         <label class="code-label" for="code-prompt">생성 또는 수정 요청</label>
         <textarea id="code-prompt" class="code-textarea code-prompt" rows="6" maxlength="100000"></textarea>
         <div class="code-gen-row">
@@ -337,6 +337,8 @@
           <button type="button" id="btn-code-regen" class="code-btn" disabled>다시 생성</button>
           <button type="button" id="btn-code-cancel" class="code-btn" disabled>취소</button>
         </div>
+        <label id="code-file-label" class="code-label" for="code-file-picker" hidden>프로젝트 파일</label>
+        <select id="code-file-picker" class="setting-input" hidden></select>
         <div id="code-files"></div>
       </div>
       <div class="code-dock">
@@ -362,8 +364,10 @@
       </div>
       <div class="chat-code-controls">
         <label><input type="checkbox" id="chat-code-enabled" /> 코드 요청</label>
-        <input id="chat-code-language" class="setting-input" list="code-languages" value="auto"
-               aria-label="코딩 언어" maxlength="60" hidden />
+        <select id="chat-code-language" class="setting-input" aria-label="코딩 언어" hidden></select>
+        <input id="chat-code-language-custom" class="setting-input code-custom-language" aria-label="직접 입력 언어"
+               placeholder="언어 이름" maxlength="60" hidden />
+        <span id="chat-code-status" role="status"></span>
       </div>
       <div class="input-hint">
         <span>Enter 전송 · 📎 파일(글자만)</span>
