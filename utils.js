@@ -440,3 +440,12 @@ function detectPageType(url, text) {
 
   return 'general';
 }
+
+function createActionButton(label, callback) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'btn-small';
+  button.textContent = label;
+  button.onclick = callback;
+  return button;
+}

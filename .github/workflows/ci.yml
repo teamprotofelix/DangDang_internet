@@ -41,13 +41,18 @@ jobs:
       - name: Build installable extension with PDF.js
         run: npm run package:extension
 
+      - name: Unpack the installable ZIP for browser tests
+        run: |
+          (cd dist/DangDang_internet && zip -qr ../installable.zip .)
+          unzip -q dist/installable.zip -d dist/extension-smoke
+
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
 
       - name: Load unpacked extension and exercise core workflows
         run: npm run test:browser
         env:
-          DANGDANG_EXTENSION_DIR: dist/DangDang_internet
+          DANGDANG_EXTENSION_DIR: dist/extension-smoke
 
       - name: Upload installable extension
         uses: actions/upload-artifact@v4

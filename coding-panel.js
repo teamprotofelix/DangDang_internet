@@ -1,25 +1,35 @@
 class CodingPanel {
   constructor(panel) {
     this.panel = panel;
-    this.status = document.getElementById('code-status');
-    this.prompt = document.getElementById('code-prompt');
-    this.language = document.getElementById('code-language');
+    this.status = document.getElementById('chat-code-status');
     this.chatLanguage = document.getElementById('chat-code-language');
+    this.customLanguage = document.getElementById('chat-code-custom-language');
     this.chatMode = document.getElementById('chat-code-enabled');
-    this.project = document.getElementById('code-files');
+    this.projectArea = document.getElementById('chat-code-project');
+    this.project = document.getElementById('chat-code-files');
+    this.cancel = document.getElementById('chat-code-cancel');
+    this.newProject = document.getElementById('chat-code-new');
     this.session = CodeProjects.migrate(null);
-    const list = document.getElementById('code-languages');
-    for (const language of ['auto', ...Object.keys(CodeProjects.languages)]) {
-      const option = document.createElement('option');
-      option.value = language;
-      list.append(option);
+    const labels = { javascript: 'JavaScript', typescript: 'TypeScript', python: 'Python' };
+    for (const language of Object.keys(CodeProjects.languages)) {
+      this.chatLanguage.add(new Option(labels[language] || language.toUpperCase(), language));
     }
-    this.chatMode.onchange = () => { this.chatLanguage.hidden = !this.chatMode.checked; };
-    document.getElementById('btn-code-gen').onclick = () => this.run(this.prompt.value, this.language.value, false);
-    document.getElementById('btn-code-revise').onclick = () => this.run(this.prompt.value, this.language.value, true);
-    document.getElementById('btn-code-regen').onclick = () => this.regenerate();
-    document.getElementById('btn-code-zip').onclick = () => this.downloadZip();
-    document.getElementById('btn-code-cancel').onclick = () => this.controller?.abort();
+    this.customOption = new Option('직접 입력', '__custom__');
+    this.chatLanguage.add(this.customOption);
+    this.chatMode.onchange = () => this.showControls();
+    this.chatLanguage.onchange = () => {
+      this.showControls();
+      if (!this.customLanguage.hidden) this.customLanguage.focus();
+    };
+    this.newProject.onclick = () => {
+      const pending = this.newProject.getAttribute('aria-pressed') === 'true';
+      this.newProject.setAttribute('aria-pressed', String(!pending));
+      this.status.textContent = pending ? '' : '다음 요청은 빈 프로젝트에서 시작합니다.';
+      this.panel.messageInput.focus();
+    };
+    document.getElementById('chat-code-regen').onclick = () => this.regenerate();
+    document.getElementById('chat-code-zip').onclick = () => this.downloadZip();
+    this.cancel.onclick = () => this.controller?.abort();
     this.ready = this.load();
   }
 
@@ -29,12 +39,20 @@ class CodingPanel {
       const data = (await chrome.storage.local.get(key))[key];
       this.session = CodeProjects.migrate(data);
       if (data && data.version !== 2) await this.save();
-      if (!this.prompt.value) this.prompt.value = this.session.prompt;
-      this.language.value = this.chatLanguage.value = this.session.language;
+      const language = this.session.language || 'auto';
+      const known = language === 'auto' || Object.hasOwn(CodeProjects.languages, language);
+      this.chatLanguage.value = known ? language : this.customOption.value;
+      this.customLanguage.value = known ? '' : language;
       this.render();
     } catch {
       this.status.textContent = '저장된 프로젝트를 불러오지 못했습니다.';
-    }
+    } finally { this.showControls(); }
+  }
+
+  showControls() {
+    this.chatLanguage.hidden = !this.chatMode.checked;
+    this.customLanguage.hidden = this.chatLanguage.hidden || this.chatLanguage.value !== this.customOption.value;
+    this.projectArea.hidden = !this.chatMode.checked && !this.session.files.length;
   }
 
   save() {
@@ -44,8 +62,17 @@ class CodingPanel {
   async fromChat() {
     const input = this.panel.messageInput;
     const text = input.value.trim();
-    if (!text || this.controller) return;
+    if (!text || this.controller || this.panel.sending) return;
     await this.ready;
+    if (this.controller || this.panel.sending || !this.chatMode.checked || input.value.trim() !== text) return;
+    const language = this.chatLanguage.value === this.customOption.value
+      ? this.customLanguage.value.trim() : this.chatLanguage.value;
+    if (!language) {
+      this.customLanguage.focus();
+      this.panel.showToast('코딩 언어를 입력해 주세요.', 'info');
+      return;
+    }
+    const revise = this.newProject.getAttribute('aria-pressed') !== 'true';
     const output = document.createElement('div');
     output.className = 'message-bubble avatar code-chat-project';
     output.setAttribute('aria-live', 'polite');
@@ -55,11 +82,16 @@ class CodingPanel {
     this.panel.charCount.textContent = '0/100000';
     this.panel.autoResizeInput();
     this.panel.scrollToBottom();
-    await this.run(text, this.chatLanguage.value, true, output);
+    await this.run(text, language, revise, output);
   }
 
   regenerate(output = null, request = this.session.last) {
     if (!request) { this.status.textContent = '다시 생성할 요청이 없습니다.'; return; }
+    if (!output) {
+      output = document.createElement('div');
+      output.className = 'message-bubble avatar code-chat-project';
+      this.panel.messagesContainer.append(output);
+    }
     return this.run(request.prompt, request.language, request.revise, output, request);
   }
 
@@ -82,15 +114,15 @@ class CodingPanel {
     if (!prompt) { write('무엇을 만들지 입력해 주세요.'); return; }
     const controller = new AbortController();
     this.controller = controller;
-    const cancel = document.getElementById('btn-code-cancel');
     const base = retry?.base ?? (revise ? this.session.files.map(file => ({ ...file })) : []);
     const request = { prompt, language, revise, base };
     let stop;
+    this.cancel.hidden = false;
     try {
       const config = await StorageManager.getResolvedApiConfig();
       if (!hasApiReady(config)) { write('설정에서 모델과 API 키를 입력해 주세요.'); return; }
       this.panel.behaviorController?.setBusy('code', true, 'study');
-      cancel.disabled = false;
+      controller.signal.throwIfAborted();
       write('코드를 생성하고 있습니다…');
       if (chatOutput) {
         stop = document.createElement('button');
@@ -106,6 +138,7 @@ class CodingPanel {
       client.applyConfig(config);
       const result = await CodeProjects.generate({ client, config, prompt, language, files: base,
         instruction: await response.text(), signal: controller.signal });
+      controller.signal.throwIfAborted();
       if (!result.files.length) {
         write('응답에 완성된 코드 블록이 없습니다.');
         const note = document.createElement('pre');
@@ -121,10 +154,10 @@ class CodingPanel {
       }
       const files = [...unchanged, ...result.files];
       if (updateProject) {
-        this.session = { version: 2, prompt, language, files, last: request };
-        this.prompt.value = prompt;
-        this.language.value = this.chatLanguage.value = language;
-        await this.save();
+        const session = { version: 2, prompt, language, files, last: request };
+        await chrome.storage.local.set({ [CONFIG.storageKeys.codeSession]: session });
+        this.session = session;
+        if (!retry) this.newProject.setAttribute('aria-pressed', 'false');
         this.render();
       }
       write(`${files.length}개 파일을 준비했습니다.`);
@@ -133,9 +166,14 @@ class CodingPanel {
         for (const file of result.files) chatOutput.append(this.fileCard(file, false));
         const actions = document.createElement('div');
         actions.className = 'code-gen-row';
-        actions.append(this.button('프로젝트 ZIP', () => this.downloadZip(files)),
-          this.button('수정 요청', () => this.panel.messageInput.focus()),
-          this.button('다시 생성', () => this.regenerate(chatOutput, request)));
+        actions.append(createActionButton('프로젝트 ZIP', () => this.downloadZip(files)),
+          createActionButton('수정 요청', () => {
+            this.chatMode.checked = true;
+            this.newProject.setAttribute('aria-pressed', 'false');
+            this.showControls();
+            this.panel.messageInput.focus();
+          }),
+          createActionButton('다시 생성', () => this.regenerate(chatOutput, request)));
         chatOutput.append(actions);
         this.panel.scrollToBottom();
       }
@@ -151,24 +189,16 @@ class CodingPanel {
     } finally {
       stop?.remove();
       this.controller = null;
-      cancel.disabled = true;
+      this.cancel.hidden = true;
       this.panel.behaviorController?.setBusy('code', false);
     }
   }
 
-  button(label, callback) {
-    const element = document.createElement('button');
-    element.type = 'button';
-    element.className = 'btn-small';
-    element.textContent = label;
-    element.onclick = callback;
-    return element;
-  }
-
   render() {
     this.project.replaceChildren(...this.session.files.map(file => this.fileCard(file, true)));
-    document.getElementById('btn-code-zip').disabled = !this.session.files.length;
-    document.getElementById('btn-code-regen').disabled = !this.session.last;
+    document.getElementById('chat-code-zip').disabled = !this.session.files.length;
+    document.getElementById('chat-code-regen').disabled = !this.session.last;
+    this.showControls();
   }
 
   fileCard(file, editable) {
@@ -178,10 +208,10 @@ class CodingPanel {
     title.textContent = `${file.name} · ${file.language}`;
     const actions = document.createElement('div');
     actions.className = 'code-gen-row';
-    actions.append(this.button('복사', async () => {
+    actions.append(createActionButton('복사', async () => {
       try { await navigator.clipboard.writeText(file.content); this.status.textContent = '복사했습니다.'; }
       catch { this.panel.showToast('코드를 선택해 복사해 주세요.', 'info'); }
-    }), this.button('파일 다운로드', () => {
+    }), createActionButton('파일 다운로드', () => {
       FileIO.downloadBlob(new Blob([file.content], { type: file.mime + ';charset=utf-8' }), file.name.split('/').at(-1));
     }));
     if (editable) {
@@ -189,7 +219,7 @@ class CodingPanel {
       name.className = 'setting-input code-filename';
       name.setAttribute('aria-label', '파일명 ' + file.name);
       name.value = file.name;
-      actions.append(name, this.button('파일명 적용', async () => {
+      actions.append(name, createActionButton('파일명 적용', async () => {
         if (this.controller) return;
         const safe = CodeProjects.filename(name.value, file.language);
         if (safe !== name.value || this.session.files.some(item => item !== file && CodeProjects.pathsConflict(item.name, safe))) {

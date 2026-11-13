@@ -4,22 +4,25 @@ const Kipris = (() => {
   const rest = '/openapi/rest/';
   const gazette = '/kipo-api/kipi/patUtiModInfoSearchSevice/';
   const history = rest + 'RelatedDocsonfilePatService/relatedDocsonfileInfo';
+  const trialService = 'judgmentInfoSearchService/';
+  const correctionPath = rest + 'patUtiModInfoSearchSevice/revisionfullDocPDFInfo';
+  const supplementalPdfKinds = ['REVISION_GAZETTE', 'TRIAL_PDF'];
   const pdfServices = { OA: 'OP', RD: 'RE', RG: 'RG' };
   const maxPdf = 20 * 1024 * 1024;
   const messages = {
     invalid_number: '특허(10)·실용신안(20) 출원번호 13자리를 입력해 주세요.',
     missing_key: '설정에서 KIPRIS PLUS API 키를 저장해 주세요.',
-    auth: '인증 실패 또는 키 미등록',
-    permission: '상품 이용 권한 없음',
+    auth: 'API 키 확인 필요',
+    permission: '해당 상품 이용 권한 필요',
     not_found: '서비스에 해당 자료가 없음',
-    missing_path: '응답에서 일치하는 PDF 경로를 찾을 수 없음',
-    expired_path: 'PDF 다운로드 경로가 만료됐거나 서버에서 찾을 수 없음',
-    gazette_unmatched: '공보 식별자가 일치하는 경로가 없음 · 전체 서류 조회 필요',
+    missing_path: '이 문서의 원문 PDF가 조회되지 않음',
+    expired_path: '원문 조회 실패 · 다운로드 주소 만료 또는 오류 · 재시도 가능',
+    gazette_unmatched: '일치하는 공보를 조회하지 못함 · 전체 서류 다시 조회',
     unsafe_path: '허용된 KIPRIS PLUS HTTPS 경로가 아님',
-    download: '원문 다운로드 실패 또는 리다이렉트 차단',
-    timeout: 'KIPRIS PLUS 응답 시간 초과',
+    download: '원문 조회 실패 · 재시도 가능',
+    timeout: '원문 조회 실패 · KIPRIS PLUS 응답 시간 초과 · 재시도 가능',
     rate: 'KIPRIS PLUS 요청 한도 초과',
-    server: 'KIPRIS PLUS 서버 오류',
+    server: '원문 조회 실패 · KIPRIS PLUS 서버 오류 · 재시도 가능',
     response: 'KIPRIS PLUS 응답 형식 또는 결과 코드 오류',
     pagination: '전체 응답 페이지를 확인하지 못함',
     pdf: 'PDF 형식·크기·페이지 검증 실패',
@@ -28,28 +31,46 @@ const Kipris = (() => {
     pdf_format: '서버 응답에 PDF 파일 서명이 없음',
     pdf_incomplete: 'PDF 끝 표시가 없어 파일이 불완전함',
     pdf_parser: 'PDF 확보 · 추출 페이지에 연결할 수 없음. 확장 프로그램을 다시 로드하고 패널에서 재시도해 주세요.',
-    pdf_assets_missing: 'PDF 확보 · 설치 폴더에 PDF.js가 없음. 설치용 패키지를 사용하거나 npm ci 후 다시 로드해 주세요.',
+    pdf_assets_missing: 'PDF 확보 · 설치 폴더에 PDF.js가 없음. GitHub Actions의 DangDang_internet_Chrome 설치용 ZIP을 사용해 주세요.',
     pdf_engine_load: 'PDF 확보 · PDF.js 초기화 실패. 확장 프로그램을 다시 로드해 주세요.',
     pdf_extract_pending: 'PDF 확보 · 텍스트 검증 대기',
-    pdf_parse: 'PDF 확보 · 페이지를 읽지 못함',
+    pdf_parse: 'PDF 확보 · 텍스트 추출 실패',
     pdf_password: 'PDF 확보 · 암호로 보호되어 자동 추출할 수 없음',
-    pdf_text: 'PDF 본문 또는 페이지 추출 불완전',
+    pdf_text: 'PDF 확보 · 텍스트 추출 불완전',
     identity: 'PDF의 문서 식별자를 확인하지 못했거나 응답이 불일치함',
-    manual: '자동 원문 제공 경로 미확인. 수동 첨부 필요',
+    pdf_unavailable: '원문 PDF 미제공 · 이력 조회 가능',
+    pdf_unknown: '원문 PDF 제공 여부 확인 중',
+    pdf_not_found: '이 문서의 원문 PDF가 조회되지 않음',
     pending: '조회 대기',
     cancelled: '사용자 취소',
     interrupted: '작업이 중단되었습니다. 조회 버튼으로 재개할 수 있습니다.',
     limit: '문서 처리 한도 초과',
     empty: '행정처리 이력에 문서가 없음',
-    verified: '원문과 문서 식별 확인',
+    verified: '원문 검증 완료',
     complete: '조회 완료',
     partial: '일부 자료만 확보',
     no_evidence: '진단 보류 · 분석 가능한 원문 없음',
     other: '이력 정보만 표시'
   };
-  const apiPdfKinds = ['OA', 'RD', 'RG', 'PUB', 'REG'];
-  const canRetryExtraction = status => ['pdf_extract_pending', 'pdf_parser', 'pdf_parse', 'pdf_assets_missing', 'pdf_engine_load'].includes(status);
+  const apiPdfKinds = ['OA', 'RD', 'RG', 'PUB', 'REG', ...supplementalPdfKinds];
+  const canRetryExtraction = status => ['pdf_extract_pending', 'pdf_parser', 'pdf_parse', 'pdf_assets_missing', 'pdf_engine_load', 'pdf_text'].includes(status);
   const isGazette = kind => kind === 'PUB' || kind === 'REG';
+
+  function documentStatus(doc) {
+    const status = doc.status === 'manual'
+      ? historyDocumentStatus(documentType(doc.title, doc.stage, doc.trialNumber), doc.kind)
+      : doc.status === 'not_found' ? 'pdf_not_found' : doc.status;
+    const message = messages[status] || status || '상태 미확인';
+    const stored = doc.hasFile ?? (doc.size > 0);
+    return stored && status !== 'verified' && !message.startsWith('PDF 확보')
+      ? 'PDF 확보 · ' + message : message;
+  }
+
+  function historyDocumentStatus(kind, originalKind = kind) {
+    if (['APP', 'AM', 'OPINION', 'SEARCH_REPORT', 'TRIAL', 'ADMIN'].includes(kind)) return 'pdf_unavailable';
+    if (['CORRECTION', 'TRIAL_DECISION', 'CITATION'].includes(originalKind)) return 'pdf_unknown';
+    return 'other';
+  }
 
   class Error extends globalThis.Error {
     constructor(code, extra = {}) {
@@ -202,24 +223,29 @@ const Kipris = (() => {
     }
   }
 
-  async function getXML(path, app, key, signal, page, sendNumber) {
+  async function getXML(path, app, key, signal, page, params) {
     if (!key) throw new Error('missing_key');
     const url = new URL(path, origin);
-    url.searchParams.set('applicationNumber', app);
-    url.searchParams.set(path.startsWith(gazette) ? 'ServiceKey' : 'accessKey', key);
-    if (sendNumber) url.searchParams.set('sendNumber', sendNumber);
-    if (page > 1) url.searchParams.set('pageNo', page);
+    const trialPdf = path.endsWith('/getJudDocumentInfoSearch');
+    const trialList = path.endsWith('/applicationNumberSearchInfo');
+    url.searchParams.set(trialPdf ? 'trialNumber' : 'applicationNumber', app);
+    url.searchParams.set(path.startsWith('/kipo-api/') ? 'ServiceKey' : 'accessKey', key);
+    for (const [name, value] of Object.entries(params || {})) url.searchParams.set(name, value);
+    if (trialList) {
+      url.searchParams.set('docsStart', page);
+      url.searchParams.set('docsCount', '30');
+    } else if (page > 1) url.searchParams.set('pageNo', page);
     const xml = xmlTree(new TextDecoder('utf-8', { fatal: true }).decode(await request(url, signal)));
     checkResult(xml);
     return xml;
   }
 
-  async function allRecords(path, app, key, signal, getRows, sendNumber) {
+  async function allRecords(path, app, key, signal, getRows, params) {
     const results = [];
     const fingerprints = new Set();
     for (let page = 1; page <= 100; page++) {
       let root;
-      try { root = await getXML(path, app, key, signal, page, sendNumber); }
+      try { root = await getXML(path, app, key, signal, page, params); }
       catch (error) {
         if (page === 1 && error.code === 'not_found') return [];
         if (results.length && !signal.aborted) throw new Error('pagination', { partial: results });
@@ -230,8 +256,9 @@ const Kipris = (() => {
       if (fingerprints.has(fingerprint)) throw new Error('pagination', { partial: results });
       fingerprints.add(fingerprint);
       results.push(...rows);
-      const total = Number(value(root, 'totalCount', 'totalRecords'));
-      const pageSize = Number(value(root, 'numOfRows', 'pageSize', 'rowsPerPage'));
+      const total = Number(value(root, 'totalCount', 'totalRecords', 'totalSearchCount'));
+      const pageSize = Number(value(root, 'numOfRows', 'pageSize', 'rowsPerPage'))
+        || (path.endsWith('/applicationNumberSearchInfo') ? 30 : 0);
       const pages = Number(value(root, 'totalPages', 'totalPage', 'pageCount')) || (total && pageSize ? Math.ceil(total / pageSize) : 0);
       if (pages ? page >= pages : !total || results.length >= total) {
         if (total && results.length < total) throw new Error('pagination', { partial: results });
@@ -246,15 +273,23 @@ const Kipris = (() => {
     return String(title || '').normalize('NFKC').replace(/^(?:\s*\[[^\]]+\]\s*)+/, '').replace(/\s/g, '');
   }
 
-  function documentType(title) {
+  function documentType(title, stage = '', trialNumber = '') {
     const name = normalizedTitle(title);
+    const prefix = String(title || '').normalize('NFKC').match(/^\s*(?:\[[^\]]+\]\s*)+/)?.[0] || '';
+    if (/^\d{13}$/.test(trialNumber) || /심판/.test(stage) || /심판|심결/.test(prefix) || /^(?:심판|심결)/.test(name)) {
+      // Claim corrections during a trial still affect the choice of registered claim version.
+      if (/정정심판|정정청구/.test(prefix + name)) return 'CORRECTION';
+      return /^(?:심판)?심결(?:문|등본|서)?$/.test(name) ? 'TRIAL_DECISION' : 'TRIAL';
+    }
+    if (/재발급|고객번호|등록증|주소변경|명의변경|서지사항정정/.test(prefix + name)) return 'ADMIN';
+    if (/선행기술조사보고서/.test(name)) return 'SEARCH_REPORT';
     if (/최후.*(?:통지|의견)|의견제출통지|거절이유통지/.test(name)) return 'OA';
     if (/거절결정/.test(name)) return 'RD';
     if (/(특허|실용신안|등록)결정/.test(name)) return 'RG';
     if (/명세서.*보정|보정서/.test(name)) return 'AM';
     if (/^(?:특허|실용신안)출원서|^국내서면제출|^국내단계진입/.test(name)) return 'APP';
     if (/의견서/.test(name)) return 'OPINION';
-    if (/정정/.test(name)) return 'CORRECTION';
+    if (/^(?:정정(?:청구|명세서|공보|공고|심판|서)|(?:등록|특허|청구범위|명세서).*정정)/.test(name)) return 'CORRECTION';
     return 'OTHER';
   }
 
@@ -265,7 +300,9 @@ const Kipris = (() => {
     const parse = root => records(root, 'documentNumber', row => ({
       application: number(value(row, 'applicationNumber')), id: number(value(row, 'documentNumber')),
       date: date(value(row, 'documentDate')), title: value(row, 'documentTitle'),
-      processing: value(row, 'processingStatus', 'documentStatus', 'status')
+      processing: value(row, 'processingStatus', 'documentStatus', 'status'),
+      stage: value(row, 'step', 'documentStage', 'processStage', 'stage'),
+      trialNumber: number(value(row, 'trialNumber')).match(/^\d{13}$/)?.[0] || ''
     }));
     let rows;
     let status = 'complete';
@@ -283,7 +320,7 @@ const Kipris = (() => {
       }
       const existing = unique.get(row.id);
       if (existing && (existing.title !== row.title || existing.date !== row.date)) status = 'pagination';
-      if (!existing) unique.set(row.id, { ...row, kind: documentType(row.title) });
+      if (!existing) unique.set(row.id, { ...row, kind: documentType(row.title, row.stage, row.trialNumber) });
     }
     return { status: unique.size || status !== 'complete' ? status : 'empty',
       rows: [...unique.values()].sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id)) };
@@ -336,7 +373,39 @@ const Kipris = (() => {
     return allRecords(path, app, key, signal, root => records(root, 'sendNumber', row => ({
       id: number(value(row, 'sendNumber')), application: number(value(row, 'applicationNumber')),
       path: value(row, 'filePath')
-    })), sendNumber);
+    })), sendNumber ? { sendNumber } : undefined);
+  }
+
+  async function correctionLocations(app, key, signal) {
+    return allRecords(correctionPath, app, key, signal, root => nodes(root, 'revisionfullDocPDFInfo')
+      .map(row => ({
+        application: number(value(row, 'applicationNumber')),
+        sequence: value(row, 'number'), typeCode: value(row, 'typeCode'),
+        type: value(row, 'typeDescription'), date: date(value(row, 'date')),
+        path: value(row, 'path')
+      })));
+  }
+
+  async function trialDecisions(app, key, signal) {
+    return allRecords(rest + trialService + 'applicationNumberSearchInfo', app, key, signal,
+      root => nodes(root, 'trialInfo').map(row => ({
+        application: number(value(row, 'applicationNumber')),
+        trialNumber: number(value(row, 'trialNumber')),
+        publicDecision: value(row, 'trialDecisionDoc') === 'Y'
+      })));
+  }
+
+  async function trialPdfLocation(trialNumber, key, signal) {
+    if (!/^\d{13}$/.test(trialNumber)) throw new Error('identity');
+    const root = await getXML('/kipo-api/kipi/' + trialService + 'getJudDocumentInfoSearch',
+      trialNumber, key, signal, 1);
+    const rows = nodes(root, 'item').filter(row => value(row, 'openYN') === 'Y');
+    const paths = new Set(rows.filter(row => value(row, 'kind') === 'S10221'
+      && value(row, 'fileName').toLowerCase() === trialNumber + '.pdf').map(row => value(row, 'path')));
+    if (paths.size > 1 || (rows.length && !paths.size)) {
+      throw new Error('identity');
+    }
+    return [...paths][0] || '';
   }
 
   async function getClaimHistory(app, key, signal) {
@@ -410,9 +479,17 @@ const Kipris = (() => {
       .map(([, year, month, day]) => year + month.padStart(2, '0') + day.padStart(2, '0'));
     const titleOk = doc.kind === 'PUB' ? /공개.*공보/.test(compact)
       : doc.kind === 'REG' ? /등록.*공보/.test(compact)
-      : doc.kind === 'ATTACHMENT' || documentType(compact) === doc.kind || compact.includes(doc.title.replace(/\s/g, ''));
+      : doc.kind === 'ATTACHMENT' || documentType(compact) === doc.kind || (!!doc.title && compact.includes(doc.title.replace(/\s/g, '')));
     const gazetteNumber = isGazette(doc.kind) && gazetteNumberInPdf(doc.kind, first);
-    const idOk = doc.kind === 'CITATION'
+    const correctionOk = doc.kind === 'REVISION_GAZETTE' && compact.includes(app)
+      && /정정(?:공고|공보)/.test(compact) && dates.includes(doc.date)
+      && !!gazetteNumberInPdf(doc.baseKind, first)
+      && (doc.baseKind === 'REG' ? /등록/.test(compact) : /공개/.test(compact))
+      && (!doc.sameDateRevision || /^\d+$/.test(doc.revisionSequence) && new RegExp('(?:정정(?:공고|공보))?일련번호[:：]?'
+        + doc.revisionSequence + '(?![0-9])').test(compact));
+    const trialOk = doc.kind === 'TRIAL_PDF' && /^\d{13}$/.test(doc.trialNumber) && /심결/.test(compact)
+      && new RegExp('(?:심판번호|사건번호|사건)[:：]?' + doc.trialNumber + '(?![0-9])').test(compact);
+    const idOk = supplementalPdfKinds.includes(doc.kind) ? correctionOk || trialOk : doc.kind === 'CITATION'
       ? first.normalize('NFKC').toUpperCase().replace(/[^A-Z0-9]/g, '').includes(doc.citationNumber)
       : compact.includes(app) && titleOk && (isGazette(doc.kind)
         ? !!gazetteNumber && (!doc.gazetteNumber || doc.gazetteNumber === gazetteNumber)
@@ -428,5 +505,6 @@ const Kipris = (() => {
 
   return { Error, messages, applicationNumber, documentType, normalizedTitle, safePdfURL, getHistory, pdfLocations,
     getClaimHistory, registeredClaims, download, checkPdfBytes, inspectPdf, citations, maxPdf, apiPdfKinds,
-    canRetryExtraction, isGazette, gazetteNumberInPdf };
+    canRetryExtraction, isGazette, gazetteNumberInPdf, documentStatus, historyDocumentStatus,
+    supplementalPdfKinds, correctionLocations, trialDecisions, trialPdfLocation };
 })();
