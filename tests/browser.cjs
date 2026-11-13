@@ -361,13 +361,14 @@ async function main() {
     await rotating.getByText('원문 조회 실패 · 다운로드 주소 만료 또는 오류 · 재시도 가능').waitFor();
     await rotating.getByRole('button', { name: '원문 다시 조회', exact: true }).click();
     await rotating.getByText('일치하는 공보를 조회하지 못함', { exact: false }).waitFor();
-    const oldId = await worker.evaluate(async app => (await PatentStore.get(app)).docs[0].id, rotatingApp);
+    const oldId = await worker.evaluate(async app => (await PatentStore.get(app)).docs.find(doc => doc.kind === 'PUB').id, rotatingApp);
     await page.click('#patent-lookup');
     await page.waitForFunction(() => document.querySelector('#patent-status').textContent === '조회 완료');
     assert.equal(await rotating.count(), 1);
     const recovered = await worker.evaluate(async app => {
       const record = await PatentStore.get(app);
-      return { id: record.docs[0].id, number: record.docs[0].gazetteNumber, state: record.collectionStatus };
+      const doc = record.docs.find(item => item.kind === 'PUB');
+      return { id: doc.id, number: doc.gazetteNumber, state: record.collectionStatus };
     }, rotatingApp);
     assert.notEqual(recovered.id, oldId);
     assert.equal(recovered.number, rotatingNumber);
@@ -386,7 +387,7 @@ async function main() {
     assert.equal(await rotating.count(), 1);
     const finalGazette = await worker.evaluate(async app => {
       const record = await PatentStore.get(app);
-      const doc = record.docs[0];
+      const doc = record.docs.find(item => item.kind === 'PUB');
       const fileIds = await new Promise((resolve, reject) => {
         const open = indexedDB.open('dangdang-patent-diagnosis');
         open.onerror = () => reject(open.error);
