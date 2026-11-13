@@ -1,4 +1,4 @@
-// Shared code project format and generation for both side-panel entry points.
+// Code project format and generation for the side-panel chat.
 const CodeProjects = (() => {
   const languages = Object.freeze({
     html: 'html', css: 'css', javascript: 'js', typescript: 'ts', python: 'py',

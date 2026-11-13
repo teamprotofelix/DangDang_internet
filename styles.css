@@ -1454,136 +1454,6 @@ textarea:focus-visible {
 }
 
 /* ============================================================ */
-/* CODE MODE                                                     */
-/* ============================================================ */
-
-.code-panel {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  background: #0f172a;
-  color: #e2e8f0;
-}
-
-.code-scroll {
-  flex: 1;
-  overflow-y: auto;
-  padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-height: 0;
-}
-
-.code-intro {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 10px 12px;
-  background: #111827;
-  border: 1px solid #1e293b;
-  border-radius: var(--radius-sm);
-  font-size: var(--font-size-sm);
-  color: #94a3b8;
-}
-
-.code-intro strong {
-  color: #7dd3fc;
-}
-
-.code-label {
-  font-size: 12px;
-  font-weight: 700;
-  color: #7dd3fc;
-  letter-spacing: 0.03em;
-}
-
-.code-textarea {
-  width: 100%;
-  box-sizing: border-box;
-  border: 1px solid #1e293b;
-  border-radius: var(--radius-sm);
-  background: #020617;
-  color: #e2e8f0;
-  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
-  font-size: 13px;
-  line-height: 1.55;
-  padding: 10px;
-  resize: vertical;
-}
-
-.code-prompt {
-  min-height: 240px;
-  flex: 1 1 auto;
-}
-
-.code-out {
-  min-height: 140px;
-  tab-size: 2;
-}
-
-.code-textarea:focus {
-  outline: 1px solid #38bdf8;
-}
-
-.code-gen-row,
-.code-dock-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.code-btn,
-.code-btn-primary {
-  border: 1px solid #334155;
-  background: #1e293b;
-  color: #e2e8f0;
-  font-family: var(--font-family);
-  font-size: 12px;
-  font-weight: 700;
-  padding: 8px 12px;
-  border-radius: 10px;
-  cursor: pointer;
-}
-
-.code-btn-primary {
-  background: linear-gradient(135deg, #38bdf8, #0ea5e9);
-  border-color: #0ea5e9;
-  color: #0f172a;
-}
-
-.code-btn:hover,
-.code-btn-primary:hover {
-  filter: brightness(1.08);
-}
-
-.code-dock {
-  flex-shrink: 0;
-  border-top: 1px solid #1e293b;
-  background: #020617;
-  padding: 10px 12px 12px;
-}
-
-.code-dock-status {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-bottom: 8px;
-}
-
-.code-dock-status strong {
-  font-size: 13px;
-  color: #7dd3fc;
-}
-
-#code-meta {
-  font-size: 11px;
-  color: #94a3b8;
-  font-family: ui-monospace, Consolas, monospace;
-}
-
-/* ============================================================ */
 /* ONBOARDING                                                    */
 /* ============================================================ */
 
@@ -1788,13 +1658,18 @@ textarea:focus-visible {
 .chat-code-controls {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
   align-items: center;
   padding-top: 6px;
 }
 .chat-code-controls label { white-space: nowrap; font-size: .85rem; }
-.chat-code-controls input.setting-input { width: min(55%, 150px); margin: 0; padding: 3px 6px; }
+.chat-code-controls .setting-input { width: min(55%, 150px); margin: 0; padding: 3px 6px; }
 .chat-code-controls [hidden] { display: none; }
-.code-gen-row { flex-wrap: wrap; }
+.chat-code-project { margin-top: 6px; font-size: .85rem; }
+.chat-code-project summary { cursor: pointer; }
+#chat-code-files { max-height: 25vh; overflow: auto; }
+#chat-code-new[aria-pressed="true"] { border-color: var(--primary-dark); }
+.code-gen-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .code-file-card { margin: 12px 0; min-width: 0; }
 .code-file-card h4 { margin: 0 0 6px; overflow-wrap: anywhere; }
 .code-filename { max-width: 14rem; }

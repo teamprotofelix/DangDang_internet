@@ -25,7 +25,6 @@
       <div class="mode-switch" role="tablist" aria-label="화면 전환">
         <button type="button" id="btn-mode-chat" class="mode-switch-btn active" role="tab" aria-selected="true">💬 대화</button>
         <button type="button" id="btn-mode-work" class="mode-switch-btn" role="tab" aria-selected="false">💼 특허 진단</button>
-        <button type="button" id="btn-mode-code" class="mode-switch-btn" role="tab" aria-selected="false">⚡ 코딩</button>
       </div>
       <div class="header-actions">
         <button id="btn-toggle-theme" class="icon-btn" title="다크 모드로 전환" aria-label="다크 모드로 전환">🌙</button>
@@ -307,7 +306,6 @@
         <p id="patent-status" role="status" aria-live="polite"></p>
         <p id="patent-history-status"></p>
         <div id="patent-docs"></div>
-        <input id="patent-attachment" type="file" accept="application/pdf,.pdf" hidden />
         <div class="code-gen-row patent-actions">
           <button id="patent-zip" class="btn-small" type="button" disabled>원문 ZIP</button>
           <button id="patent-delete" class="btn-small" type="button" disabled>이 출원 자료 삭제</button>
@@ -320,28 +318,6 @@
           <button data-patent-format="hwpx" class="btn-small" type="button" disabled>HWPX</button>
         </div>
         <pre id="patent-report" class="patent-report" aria-label="진단 보고서"></pre>
-      </div>
-    </div>
-
-    <div id="code-panel" class="code-panel hidden">
-      <div class="code-scroll">
-        <div class="code-intro"><h2>코딩 프로젝트</h2></div>
-        <label class="code-label" for="code-language">언어 (자동 또는 직접 입력)</label>
-        <input id="code-language" class="setting-input" list="code-languages" value="auto" maxlength="60" />
-        <datalist id="code-languages"></datalist>
-        <label class="code-label" for="code-prompt">생성 또는 수정 요청</label>
-        <textarea id="code-prompt" class="code-textarea code-prompt" rows="6" maxlength="100000"></textarea>
-        <div class="code-gen-row">
-          <button type="button" id="btn-code-gen" class="code-btn-primary">새 프로젝트</button>
-          <button type="button" id="btn-code-revise" class="code-btn">수정 요청</button>
-          <button type="button" id="btn-code-regen" class="code-btn" disabled>다시 생성</button>
-          <button type="button" id="btn-code-cancel" class="code-btn" disabled>취소</button>
-        </div>
-        <div id="code-files"></div>
-      </div>
-      <div class="code-dock">
-        <strong id="code-status" role="status">준비됨</strong>
-        <button type="button" id="btn-code-zip" class="code-btn-primary" disabled>프로젝트 ZIP</button>
       </div>
     </div>
 
@@ -362,9 +338,22 @@
       </div>
       <div class="chat-code-controls">
         <label><input type="checkbox" id="chat-code-enabled" /> 코드 요청</label>
-        <input id="chat-code-language" class="setting-input" list="code-languages" value="auto"
-               aria-label="코딩 언어" maxlength="60" hidden />
+        <select id="chat-code-language" class="setting-input" aria-label="코딩 언어" hidden>
+          <option value="auto">자동 감지</option>
+        </select>
+        <input id="chat-code-custom-language" class="setting-input" aria-label="직접 입력 언어" maxlength="60" hidden />
+        <button type="button" id="chat-code-cancel" class="btn-small" hidden>생성 취소</button>
       </div>
+      <details id="chat-code-project" class="chat-code-project" hidden>
+        <summary>코드 프로젝트</summary>
+        <div class="code-gen-row">
+          <button type="button" id="chat-code-new" class="btn-small" aria-pressed="false">새 프로젝트</button>
+          <button type="button" id="chat-code-regen" class="btn-small" disabled>다시 생성</button>
+          <button type="button" id="chat-code-zip" class="btn-small" disabled>프로젝트 ZIP</button>
+        </div>
+        <div id="chat-code-status" role="status"></div>
+        <div id="chat-code-files"></div>
+      </details>
       <div class="input-hint">
         <span>Enter 전송 · 📎 파일(글자만)</span>
         <span id="char-count">0/100000</span>

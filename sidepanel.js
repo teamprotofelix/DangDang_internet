@@ -25,8 +25,6 @@ class SidePanelController {
     // 업무 모드 DOM
     this.btnWorkMode = document.getElementById('btn-mode-work');
     this.btnModeChat = document.getElementById('btn-mode-chat');
-    this.btnModeCode = document.getElementById('btn-mode-code');
-    this.codePanel = document.getElementById('code-panel');
     this.workPanel = document.getElementById('work-panel');
     this.inputAreaEl = document.getElementById('input-area');
 
@@ -172,9 +170,6 @@ class SidePanelController {
     this.btnWorkMode.addEventListener('click', () => this.setAppMode('work'));
     if (this.btnModeChat) {
       this.btnModeChat.addEventListener('click', () => this.setAppMode('chat'));
-    }
-    if (this.btnModeCode) {
-      this.btnModeCode.addEventListener('click', () => this.setAppMode('code'));
     }
     this.coding = new CodingPanel(this);
     this.patents = new PatentPanel(this);
@@ -1464,27 +1459,21 @@ class SidePanelController {
   }
 
   setAppMode(mode) {
-    const next = mode === 'work' || mode === 'code' ? mode : 'chat';
+    const next = mode === 'work' ? mode : 'chat';
     this.appMode = next;
 
     this.btnModeChat?.classList.toggle('active', next === 'chat');
     this.btnWorkMode?.classList.toggle('active', next === 'work');
-    this.btnModeCode?.classList.toggle('active', next === 'code');
     this.btnModeChat?.setAttribute('aria-selected', next === 'chat' ? 'true' : 'false');
     this.btnWorkMode?.setAttribute('aria-selected', next === 'work' ? 'true' : 'false');
-    this.btnModeCode?.setAttribute('aria-selected', next === 'code' ? 'true' : 'false');
 
     this.chatContainer?.classList.toggle('hidden', next !== 'chat');
     this.workPanel?.classList.toggle('hidden', next !== 'work');
-    this.codePanel?.classList.toggle('hidden', next !== 'code');
     if (this.inputAreaEl) this.inputAreaEl.classList.toggle('hidden', next !== 'chat');
 
     if (next === 'work') {
       this.updateAvatarMood('study');
       this.moodLabel.textContent = '업무 중 📚';
-    } else if (next === 'code') {
-      this.updateAvatarMood('think');
-      this.moodLabel.textContent = '코딩 중 ⚡';
     } else {
       this.updateAvatarMood('default');
       this.moodLabel.textContent = '기본';

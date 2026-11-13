@@ -746,3 +746,94 @@ test('실제 PDF 파서가 합성 한국어 원문과 페이지 경계를 읽음
     assert.match(text, /시험\s+근거\s+문장입니다\./);
   } finally { await loading.destroy(); }
 });
+
+test('심판 의견서·보정서와 등록 행정 문서를 심사 판본에서 제외', async () => {
+  const first = { id: '1', serial: '1', title: '[특허출원]특허출원서', date: '20990101' };
+  const { Kipris, PatentRules } = testRuntime(async () => new Response(xml(
+    historyRow(first.id, first.title, first.date).replace('</item>', '<step>출원</step><trialNumber>N/A</trialNumber></item>')
+    + historyRow('2', '의견서').replace('</item>', '<step>심판</step><trialNumber>N/A</trialNumber></item>')
+    + historyRow('3', '[심판청구]보정서')
+    + historyRow('4', '등록증 재발급 신청서')
+    + historyRow('5', '[등록]고객번호 정정 신청서')
+    + historyRow('6', '선행기술조사보고서')
+  )));
+  const { rows } = await Kipris.getHistory(app, 'fixture', AbortSignal.timeout(1000));
+  assert.deepEqual(Array.from(rows, row => row.kind), ['APP', 'TRIAL', 'TRIAL', 'ADMIN', 'ADMIN', 'SEARCH_REPORT']);
+  assert.equal(Kipris.documentType('정정청구서', '심판'), 'CORRECTION');
+  assert.equal(Kipris.documentType('보정서', '', '2099100000001'), 'TRIAL');
+  const later = { id: '3', serial: '2', title: '[심판청구]보정서', date: '20990102' };
+  const version = PatentRules.restoreClaims({ events: [first, later], changes: [
+    { ...first, claim: '1', change: '신규', text: '심사 당시 청구항' },
+    { ...later, claim: '1', change: '수정', text: '심판 단계 변경' }
+  ] }, rows, { date: '20990103' });
+  assert.equal(version.status, 'reconstructed');
+  assert.equal(version.claims[0].text, '심사 당시 청구항');
+});
+
+test('정정공고와 공개 심결문은 각각 공식 REST 식별자로 조회하고 원문을 대조', async () => {
+  const trialNumber = '2099100000001';
+  let published = 'Y';
+  let filename = trialNumber + '.PDF';
+  const { Kipris } = testRuntime(async url => {
+    const parsed = new URL(url);
+    if (parsed.pathname.endsWith('/revisionfullDocPDFInfo')) {
+      assert.match(parsed.pathname, /^\/openapi\/rest\//);
+      assert.equal(parsed.searchParams.get('applicationNumber'), app);
+      assert.equal(parsed.searchParams.get('accessKey'), 'fixture');
+      return new Response(xml('<revisionfullDocPDFInfo><applicationNumber>' + app
+        + '</applicationNumber><number>1</number><typeCode>B0102</typeCode><typeDescription>정정공보(등록)전문</typeDescription>'
+        + '<date>20990105</date><path>/revision.pdf</path></revisionfullDocPDFInfo>'));
+    }
+    if (parsed.pathname.endsWith('/applicationNumberSearchInfo')) {
+      assert.equal(parsed.searchParams.get('applicationNumber'), app);
+      assert.equal(parsed.searchParams.get('docsStart'), '1');
+      return new Response(xml('<items><TotalSearchCount>1</TotalSearchCount><TrialInfo><trialNumber>' + trialNumber
+        + '</trialNumber><applicationNumber>' + app + '</applicationNumber><trialDecisionDoc>Y</trialDecisionDoc></TrialInfo></items>'));
+    }
+    assert.match(parsed.pathname, /^\/kipo-api\/kipi\/.*\/getJudDocumentInfoSearch$/);
+    assert.equal(parsed.searchParams.get('trialNumber'), trialNumber);
+    assert.equal(parsed.searchParams.get('applicationNumber'), null);
+    assert.equal(parsed.searchParams.get('ServiceKey'), 'fixture');
+    return new Response(xml('<item><kind>S10221</kind><openYN>' + published + '</openYN><fileName>'
+      + filename + '</fileName><path>/trial.pdf</path></item>'));
+  });
+  const signal = AbortSignal.timeout(1000);
+  const [revision] = await Kipris.correctionLocations(app, 'fixture', signal);
+  assert.deepEqual(plain(revision), { application: app, sequence: '1', typeCode: 'B0102',
+    type: '정정공보(등록)전문', date: '20990105', path: '/revision.pdf' });
+  const [decision] = await Kipris.trialDecisions(app, 'fixture', signal);
+  assert.deepEqual(plain(decision), { application: app, trialNumber, publicDecision: true });
+  assert.equal(await Kipris.trialPdfLocation(trialNumber, 'fixture', signal), '/trial.pdf');
+  published = 'N';
+  assert.equal(await Kipris.trialPdfLocation(trialNumber, 'fixture', signal), '');
+  published = 'Y';
+  filename = '2099100000002.pdf';
+  await assert.rejects(Kipris.trialPdfLocation(trialNumber, 'fixture', signal), { code: 'identity' });
+  const bytes = new TextEncoder().encode('%PDF-1.4\n' + ' '.repeat(150) + '%%EOF');
+  const extract = text => async () => ({ pageCount: 1, pages: [{ page: 1, text }] });
+  const correction = { kind: 'REVISION_GAZETTE', baseKind: 'REG', date: revision.date, revisionSequence: '1' };
+  const first = '정정공고 등록특허공보\n출원번호 ' + app + '\n등록번호 10-9999001\n2099.01.05';
+  assert.equal((await Kipris.inspectPdf(bytes, app, correction, extract(first))).status, 'verified');
+  assert.equal((await Kipris.inspectPdf(bytes, app, { ...correction, sameDateRevision: true }, extract(first))).status, 'identity');
+  assert.equal((await Kipris.inspectPdf(bytes, app, { kind: 'TRIAL_PDF', trialNumber },
+    extract('심결문\n사건번호 2099100000002'))).status, 'identity');
+  assert.equal((await Kipris.inspectPdf(bytes, app, { kind: 'TRIAL_PDF', trialNumber },
+    extract('심결문\n사건번호 ' + trialNumber))).status, 'verified');
+});
+
+test('기존 보고서의 저장 상태도 PDF 확보·원문 제공 상태로 표시', () => {
+  const { Kipris, PatentDiagnosis } = testRuntime();
+  const documents = [
+    { kind: 'OPINION', title: '의견서', status: 'manual' },
+    { kind: 'PUB', title: '공개공보', status: 'not_found' },
+    { kind: 'OA', title: '의견제출통지서', status: 'identity', size: 300 },
+    { kind: 'RD', title: '거절결정서', status: 'pdf_assets_missing', size: 400 }
+  ];
+  const text = PatentDiagnosis.format({ application: app, documents, versions: {}, findings: [], used: [], omitted: [] });
+  assert.match(text, /원문 PDF 미제공/);
+  assert.match(text, /이 문서의 원문 PDF가 조회되지 않음/);
+  assert.match(text, /PDF 확보 · PDF의 문서 식별자/);
+  assert.match(text, /설치용 ZIP/);
+  assert.doesNotMatch(text, /수동 첨부 필요|경로 미확인/);
+  assert.equal(Kipris.canRetryExtraction('pdf_text'), true);
+});

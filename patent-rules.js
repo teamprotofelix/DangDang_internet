@@ -55,6 +55,12 @@ const PatentRules = (() => {
   }
 
   function restoreClaims(history, rows, target) {
+    const unrelated = new Set(rows.filter(row => ['TRIAL', 'TRIAL_DECISION', 'ADMIN'].includes(row.kind))
+      .map(row => row.id));
+    if (history && unrelated.size) {
+      history = { events: history.events?.filter(event => !unrelated.has(event.id)),
+        changes: history.changes?.filter(change => !unrelated.has(change.id)) };
+    }
     if (!history?.events?.length || !history.changes?.length || !target.date) return failure('청구항 변동 이력 또는 기준일 없음');
     if (rows.some(row => row.kind === 'AM' && row.date === target.date)) return failure('통지와 보정이 같은 날이라 선후 관계 미확인');
     const events = history.events.filter(row => row.date < target.date)
@@ -101,7 +107,7 @@ const PatentRules = (() => {
 
   function verifyRegisteredClaims(raw, gazette, rows) {
     if (!Array.isArray(raw) || !raw.length || gazette?.status !== 'verified') return failure('등록공보와 청구항 API가 모두 필요함');
-    if (rows.some(row => row.kind === 'CORRECTION' || row.kind === 'RD')) return failure('정정 또는 거절·등록 경과의 기준 시점 확인 필요');
+    if (rows.some(row => row.kind === 'CORRECTION' || row.kind === 'RD' || (row.kind === 'REVISION_GAZETTE' && row.baseKind === 'REG'))) return failure('정정 또는 거절·등록 경과의 기준 시점 확인 필요');
     const full = gazette.pages.map(page => page.text).join('\n');
     const count = Number(full.match(/(?:전체|총)\s*청구항\s*(?:수\s*[:：]?)?\s*(?:총\s*)?(\d+)\s*항?/)?.[1]);
     const registeredAt = full.match(/(?:\(24\)\s*)?등\s*록\s*일\s*자\s*[:：]?\s*(\d{4}\s*년\s*\d{1,2}\s*월\s*\d{1,2}\s*일|\d{4}[.-]\d{2}[.-]\d{2})/)?.[1];

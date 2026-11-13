@@ -265,8 +265,8 @@ const PatentDiagnosis = (() => {
     return { application: record.application, queriedAt: record.queriedAt, historyStatus: record.historyStatus,
       collectionStatus: record.collectionStatus, claimStatus: record.claimStatus,
       registeredClaimStatus: record.registeredClaimStatus, status,
-      documents: record.docs.map(({ id, title, date, kind, status, processing, size, pageCount, source, gazetteNumber }) =>
-        ({ id, title, date, kind, status, processing, size, pageCount, source, gazetteNumber })),
+      documents: record.docs.map(({ id, title, date, kind, status, processing, size, pageCount, source, gazetteNumber, hasFile, trialNumber, revisionSequence }) =>
+        ({ id, title, date, kind, status, processing, size, pageCount, source, gazetteNumber, hasFile, trialNumber, revisionSequence })),
       versions, findings, used, omitted, calls: outputs.length, tokenBudget: { requested,
         outputPerCall: Math.max(0, ...outputs), minOutputPerCall: outputs.length ? Math.min(...outputs) : 0 } };
   }
@@ -285,7 +285,7 @@ const PatentDiagnosis = (() => {
       '', '## 문서와 확보 상태'
     ];
     for (const doc of report.documents) lines.push(
-      `- ${doc.title} · ${doc.date || '일자 미확인'} · ${doc.gazetteNumber || doc.id} · ${Kipris.messages[doc.status] || doc.status}${doc.pageCount ? ` · ${doc.pageCount}쪽` : ''}`);
+      `- ${doc.title} · ${doc.date || '일자 미확인'} · ${doc.gazetteNumber || doc.trialNumber || doc.revisionSequence || doc.id} · ${Kipris.documentStatus(doc)}${doc.pageCount ? ` · ${doc.pageCount}쪽` : ''}`);
     lines.push('', '## 적용 청구항 판본');
     for (const [id, version] of Object.entries(report.versions)) {
       lines.push(`- ${id} · ${version.asOf || version.registeredAt || '미확인'} · ${version.claims.length}항 · ${version.reason || '등록공보와 청구항 API 대조'}`);
