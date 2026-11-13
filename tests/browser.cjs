@@ -551,11 +551,13 @@ async function main() {
       Object.assign(doc, { status: 'identity', pages: [], pageCount: 1, identityVerified: false, size: bytes.length });
       await PatentStore.saveWithFile(record, id, bytes);
     }, { app: registeredApp, id: correction1, pdf: correctionPdf });
+    await page.reload();
+    await page.click('#btn-mode-work');
+    await retryOriginal.waitFor();
+    assert.equal(await getCorrectionFile(), correctionPdf);
     await page.click('#patent-lookup');
-    await page.waitForFunction(async ({ app, id }) => {
-      const record = await PatentStore.get(app);
-      return record.state !== 'running' && record.docs.find(doc => doc.id === id).status === 'verified';
-    }, { app: registeredApp, id: correction1 });
+    await firstCorrection.getByText('원문 검증 완료', { exact: false }).waitFor();
+    await page.waitForFunction(() => !document.querySelector('#patent-start').disabled);
     assert.equal(await getCorrectionFile(), correctedPdf);
     assert.equal(await worker.evaluate(() => globalThis.fixtureRequests.correctionPdfs), 6);
     assert.equal(await secondCorrection.getByRole('button', { name: '원문 다시 조회', exact: true }).count(), 0);
