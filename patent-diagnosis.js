@@ -4,8 +4,21 @@ const PatentDiagnosis = (() => {
   const full = doc => doc.status === 'verified';
   const notChecked = (target, rule, reason) => ({ target, rule, code: null, level: '확인 불가',
     evidence: [], comparison: '검토 보류', analysis: reason, verdict: reason });
-  // 제42조 제4항 제1호는 발명의 설명에 의한 뒷받침, 제2호는 명확·간결 요건이다.
-  const supportProvision = /제42조제?4항(?:제?2호(?:및|또는|[,·ㆍ]|과|와))?제?1호/;
+  function citesSupportProvision(text) {
+    // 인용이 이어지는 동안만 조·항을 상속한다. 제42조 제4항 제1호는 뒷받침 요건이다.
+    const nextPart = /(?:및|또는|[,·ᆞ]|과|와)*(?:(같은조)의?|같은항의?|제?(\d+)항|(제?\d+(?:(?:및|또는|[,·ᆞ]|과|와)제?\d+)*)호)/y;
+    for (const article of text.matchAll(/제42조(?!의\d)/g)) {
+      nextPart.lastIndex = article.index + article[0].length;
+      let paragraph;
+      for (let part; (part = nextPart.exec(text));) {
+        const [, sameArticle, explicitParagraph, items] = part;
+        if (sameArticle) paragraph = undefined;
+        else if (explicitParagraph) paragraph = explicitParagraph;
+        else if (paragraph === '4' && items?.split(/\D+/).includes('1')) return true;
+      }
+    }
+    return false;
+  }
 
   function finalNoticeSources(record, target, version, priorVersions) {
     const originals = new Set();
@@ -23,7 +36,7 @@ const PatentDiagnosis = (() => {
         }
         linked.forEach(doc => originals.add(doc));
       }
-      if (supportProvision.test(text) || /제42조제?3항|실시가능|실시할수없|뒷받침|지원요건|신규사항/.test(text)) {
+      if (citesSupportProvision(text) || /제42조제?3항|실시가능|실시할수없|뒷받침|지원요건|신규사항/.test(text)) {
         const filings = claims.steps.map(step => record.docs.find(doc => doc.id === step.id));
         if (filings.some(doc => !doc || !full(doc) || !usable(doc))) {
           return { reason: '해당 통지 당시의 명세서·도면 또는 보정서 원문을 검증하지 못함' };

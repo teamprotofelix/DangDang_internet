@@ -534,7 +534,7 @@ test('OA-15는 선행·최후통지에 연결된 원문을 보내고 두 통지�
   assert.equal((await run(specDocs, [...specNotices, ...[filing, amendment].map(reference)])).level, noFinding);
 });
 
-test('OA-15는 제42조 제4항 제1호만 적힌 통지에도 해당 시점의 명세서 원문을 요구', async () => {
+test('OA-15는 제42조 제4항 제1호 단독·병기·같은 항 참조에 명세서 원문을 요구', async () => {
   const noFinding = '검토한 규칙에서 발견되지 않음';
   const verified = { status: 'verified', identityVerified: true };
   const filing = { id: 'app', kind: 'APP', title: '특허출원서', date: '20990101', serial: '1' };
@@ -589,6 +589,36 @@ test('OA-15는 제42조 제4항 제1호만 적힌 통지에도 해당 시점의 
   const priorOnly = await run([priorSupport, clarity], [originals[0], amendment], [originals[0]]);
   assert.deepEqual(priorOnly.request.requiredOriginals, [filing.id]);
   assert.equal(priorOnly.finding.level, noFinding);
+
+  for (const text of [
+    '특허법 제42조 제4항 제1, 2호',
+    '특허법 제42조 제4항 제2호 및 같은 항 제1호',
+    '특허법 제42조 제4항 제2호 및 같은 항의 제1호',
+    '특허법 제42조 제4항 제2ㆍ1호',
+    '특허법 제４２조\n제４항 제２호, 제１호',
+    '특허법 제42조 제4항 제2호 및 같은 조 제4항 제1호'
+  ]) {
+    const compound = { ...final, pages: [{ page: 1, text }] };
+    const missing = await run([prior, compound], [filing, amendment]);
+    assert.equal(missing.finding.level, '확인 불가', text);
+    assert.equal(missing.request, undefined, text);
+    const noticesOnly = await run([prior, compound], originals);
+    assert.deepEqual(noticesOnly.request.requiredOriginals, [filing.id, amendment.id], text);
+    assert.equal(noticesOnly.finding.level, '확인 불가', text);
+    assert.equal((await run([prior, compound], originals, originals)).finding.level, noFinding, text);
+  }
+  for (const text of [
+    '특허법 제42조 제4항 제2호 및 제2항 제1호',
+    '특허법 제42조 제4항 제2호 및 제43조 제1항 제2호 및 같은 항 제1호',
+    '특허법 제42조 제4항 제2호 및 제2항 제2호 및 같은 항 제1호',
+    '특허법 제42조 제4항 제2호. 아래 제1호는 별도 항목입니다.',
+    '특허법 제42조 제4항 제11호'
+  ]) {
+    const unrelated = { ...final, pages: [{ page: 1, text }] };
+    const result = await run([prior, unrelated], [filing, amendment]);
+    assert.deepEqual(result.request.requiredOriginals, [], text);
+    assert.equal(result.finding.level, noFinding, text);
+  }
 });
 
 test('긴 문서 대조는 여러 원문의 쪽별 발췌를 사용하고 발견 없음 판정은 보류', async () => {
