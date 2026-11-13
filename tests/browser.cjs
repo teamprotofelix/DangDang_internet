@@ -410,8 +410,14 @@ async function main() {
     for (const title of ['등록공보', '심결문 PDF', '정정공보(등록)전문']) {
       await page.getByRole('row').filter({ hasText: title }).getByText('원문 검증 완료', { exact: false }).waitFor();
     }
-    const kinds = await worker.evaluate(async app => (await PatentStore.get(app)).docs.map(doc => doc.kind), mixedApp);
-    assert.deepEqual(kinds, ['APP', 'RG', 'TRIAL', 'TRIAL', 'ADMIN', 'ADMIN', 'PUB', 'REG', 'REVISION_GAZETTE', 'TRIAL_PDF']);
+    const kinds = await worker.evaluate(async app => Object.fromEntries(
+      (await PatentStore.get(app)).docs.map(doc => [doc.id, doc.kind])), mixedApp);
+    assert.deepEqual(kinds, {
+      '119999000000101': 'APP', '959999000000102': 'RG', '119999000000103': 'TRIAL',
+      '119999000000104': 'TRIAL', '119999000000105': 'ADMIN', '119999000000106': 'ADMIN',
+      PUB: 'PUB', ['REG-' + regNumber]: 'REG', 'REVISION_GAZETTE-B0102-1': 'REVISION_GAZETTE',
+      ['TRIAL_PDF-' + trialNumber]: 'TRIAL_PDF'
+    });
     assert.deepEqual(errors, []);
     console.log('Chromium extension smoke passed: legacy migration, settings, code ZIP, PDF extraction, consent, diagnosis, restore, delete.');
   } finally {
