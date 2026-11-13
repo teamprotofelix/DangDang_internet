@@ -2,15 +2,18 @@
 const Kipris = (() => {
   const origin = 'https://plus.kipris.or.kr';
   const rest = '/openapi/rest/';
-  const gazette = '/kipo-api/kipi/patUtiModInfoSearchSevice/';
+  const modern = '/kipo-api/kipi/';
+  const gazette = modern + 'patUtiModInfoSearchSevice/';
+  const correctionPath = rest + 'patUtiModInfoSearchSevice/revisionfullDocPDFInfo';
+  const trialPath = 'judgmentInfoSearchService/';
   const history = rest + 'RelatedDocsonfilePatService/relatedDocsonfileInfo';
   const pdfServices = { OA: 'OP', RD: 'RE', RG: 'RG' };
   const maxPdf = 20 * 1024 * 1024;
   const messages = {
     invalid_number: '특허(10)·실용신안(20) 출원번호 13자리를 입력해 주세요.',
     missing_key: '설정에서 KIPRIS PLUS API 키를 저장해 주세요.',
-    auth: '인증 실패 또는 키 미등록',
-    permission: '상품 이용 권한 없음',
+    auth: 'API 키 확인 필요',
+    permission: '해당 상품 이용 권한 필요',
     not_found: '서비스에 해당 자료가 없음',
     missing_path: '응답에서 일치하는 PDF 경로를 찾을 수 없음',
     expired_path: 'PDF 다운로드 경로가 만료됐거나 서버에서 찾을 수 없음',
@@ -28,28 +31,46 @@ const Kipris = (() => {
     pdf_format: '서버 응답에 PDF 파일 서명이 없음',
     pdf_incomplete: 'PDF 끝 표시가 없어 파일이 불완전함',
     pdf_parser: 'PDF 확보 · 추출 페이지에 연결할 수 없음. 확장 프로그램을 다시 로드하고 패널에서 재시도해 주세요.',
-    pdf_assets_missing: 'PDF 확보 · 설치 폴더에 PDF.js가 없음. 설치용 패키지를 사용하거나 npm ci 후 다시 로드해 주세요.',
+    pdf_assets_missing: 'PDF 확보 · 설치 폴더에 PDF.js가 없음. GitHub Actions의 DangDang_internet_Chrome 설치용 ZIP을 사용해 주세요.',
     pdf_engine_load: 'PDF 확보 · PDF.js 초기화 실패. 확장 프로그램을 다시 로드해 주세요.',
     pdf_extract_pending: 'PDF 확보 · 텍스트 검증 대기',
-    pdf_parse: 'PDF 확보 · 페이지를 읽지 못함',
+    pdf_parse: 'PDF 확보 · 텍스트 추출 실패',
     pdf_password: 'PDF 확보 · 암호로 보호되어 자동 추출할 수 없음',
-    pdf_text: 'PDF 본문 또는 페이지 추출 불완전',
+    pdf_text: 'PDF 확보 · 본문 또는 페이지 추출 불완전',
     identity: 'PDF의 문서 식별자를 확인하지 못했거나 응답이 불일치함',
-    manual: '자동 원문 제공 경로 미확인. 수동 첨부 필요',
+    manual: '원문 PDF 제공 명세 확인 필요',
+    metadata_only: '원문 PDF 미제공 · 이력 또는 서지 정보 조회 가능',
+    missing_trial_number: '심판번호 확인 필요 · 이력 조회 가능',
     pending: '조회 대기',
     cancelled: '사용자 취소',
     interrupted: '작업이 중단되었습니다. 조회 버튼으로 재개할 수 있습니다.',
     limit: '문서 처리 한도 초과',
     empty: '행정처리 이력에 문서가 없음',
-    verified: '원문과 문서 식별 확인',
+    verified: '원문 검증 완료',
     complete: '조회 완료',
     partial: '일부 자료만 확보',
     no_evidence: '진단 보류 · 분석 가능한 원문 없음',
     other: '이력 정보만 표시'
   };
-  const apiPdfKinds = ['OA', 'RD', 'RG', 'PUB', 'REG'];
-  const canRetryExtraction = status => ['pdf_extract_pending', 'pdf_parser', 'pdf_parse', 'pdf_assets_missing', 'pdf_engine_load'].includes(status);
+  const apiPdfKinds = ['OA', 'RD', 'RG', 'PUB', 'REG', 'CORR_PUB', 'CORR_REG', 'TRIAL_DECISION', 'TRIAL_SUPPLEMENT'];
+  const canRetryExtraction = status => ['pdf_extract_pending', 'pdf_parser', 'pdf_parse',
+    'pdf_assets_missing', 'pdf_engine_load', 'pdf_text', 'pdf_password'].includes(status);
+  const historyDocumentStatus = kind => ({
+    OA: 'pending', RD: 'pending', RG: 'pending', APP: 'metadata_only', AM: 'metadata_only',
+    OPINION: 'metadata_only', SEARCH_REPORT: 'metadata_only', TRIAL_FILING: 'metadata_only',
+    TRIAL_DECISION: 'pending', TRIAL_SUPPLEMENT: 'pending', CORRECTION: 'metadata_only', CITATION: 'metadata_only'
+  })[kind] || 'other';
+
+  function documentStatus(doc) {
+    if (doc.status === 'manual') return messages[historyDocumentStatus(doc.kind)] || messages.manual;
+    if (doc.status === 'not_found' && apiPdfKinds.includes(doc.kind)) return '이 문서의 원문 PDF가 조회되지 않음';
+    const status = messages[doc.status] || doc.status;
+    return (doc.hasFile || doc.size) && doc.status !== 'verified' && !status.startsWith('PDF 확보')
+      ? 'PDF 확보 · ' + status : status;
+  }
   const isGazette = kind => kind === 'PUB' || kind === 'REG';
+  const isCorrectionGazette = kind => kind === 'CORR_PUB' || kind === 'CORR_REG';
+  const isTrialDecision = kind => kind === 'TRIAL_DECISION' || kind === 'TRIAL_SUPPLEMENT';
 
   class Error extends globalThis.Error {
     constructor(code, extra = {}) {
@@ -202,11 +223,13 @@ const Kipris = (() => {
     }
   }
 
-  async function getXML(path, app, key, signal, page, sendNumber) {
+  async function getXML(path, app, key, signal, page, sendNumber, trialNumber) {
     if (!key) throw new Error('missing_key');
     const url = new URL(path, origin);
-    url.searchParams.set('applicationNumber', app);
-    url.searchParams.set(path.startsWith(gazette) ? 'ServiceKey' : 'accessKey', key);
+    const identifier = !trialNumber ? 'applicationNumber'
+      : path.endsWith('/trialBibliographicSummaryInfo') ? 'TrialNumber' : 'trialNumber';
+    url.searchParams.set(identifier, trialNumber || app);
+    url.searchParams.set(path.startsWith(modern) ? 'ServiceKey' : 'accessKey', key);
     if (sendNumber) url.searchParams.set('sendNumber', sendNumber);
     if (page > 1) url.searchParams.set('pageNo', page);
     const xml = xmlTree(new TextDecoder('utf-8', { fatal: true }).decode(await request(url, signal)));
@@ -214,12 +237,12 @@ const Kipris = (() => {
     return xml;
   }
 
-  async function allRecords(path, app, key, signal, getRows, sendNumber) {
+  async function allRecords(path, app, key, signal, getRows, sendNumber, trialNumber) {
     const results = [];
     const fingerprints = new Set();
     for (let page = 1; page <= 100; page++) {
       let root;
-      try { root = await getXML(path, app, key, signal, page, sendNumber); }
+      try { root = await getXML(path, app, key, signal, page, sendNumber, trialNumber); }
       catch (error) {
         if (page === 1 && error.code === 'not_found') return [];
         if (results.length && !signal.aborted) throw new Error('pagination', { partial: results });
@@ -246,15 +269,26 @@ const Kipris = (() => {
     return String(title || '').normalize('NFKC').replace(/^(?:\s*\[[^\]]+\]\s*)+/, '').replace(/\s/g, '');
   }
 
-  function documentType(title) {
-    const name = normalizedTitle(title);
+  const validTrialNumber = raw => /^(?:19|20)\d{11}$/.test(raw);
+
+  function documentType(title, { stage = '', trialNumber = '' } = {}) {
+    const text = String(title || '').normalize('NFKC').trim();
+    const prefixes = [...text.matchAll(/\[([^\]]+)\]/g)].map(match => match[1]).join(' ');
+    const name = normalizedTitle(text);
+    if (validTrialNumber(trialNumber) || /심판|심결/.test(stage + prefixes)
+      || /^(?:심판|심결|정정심판|무효심판|거절결정불복)/.test(name)) {
+      if (/경정결정문|경정결정서/.test(name)) return 'TRIAL_SUPPLEMENT';
+      return /심결문|심결서|심판결문|심결.*통지|^심결$/.test(name) ? 'TRIAL_DECISION' : 'TRIAL_FILING';
+    }
+    if (/증서|등록증|고객번호|출원인코드|대리인코드|재발급/.test(prefixes + name)) return 'OTHER';
+    if (/선행기술조사.*(?:보고|결과|의뢰)/.test(name)) return 'SEARCH_REPORT';
     if (/최후.*(?:통지|의견)|의견제출통지|거절이유통지/.test(name)) return 'OA';
     if (/거절결정/.test(name)) return 'RD';
     if (/(특허|실용신안|등록)결정/.test(name)) return 'RG';
     if (/명세서.*보정|보정서/.test(name)) return 'AM';
     if (/^(?:특허|실용신안)출원서|^국내서면제출|^국내단계진입/.test(name)) return 'APP';
     if (/의견서/.test(name)) return 'OPINION';
-    if (/정정/.test(name)) return 'CORRECTION';
+    if (/정정(?:공보|공고|청구|명세서|보정)|(?:청구범위|청구항|명세서|도면).*정정/.test(name)) return 'CORRECTION';
     return 'OTHER';
   }
 
@@ -265,7 +299,9 @@ const Kipris = (() => {
     const parse = root => records(root, 'documentNumber', row => ({
       application: number(value(row, 'applicationNumber')), id: number(value(row, 'documentNumber')),
       date: date(value(row, 'documentDate')), title: value(row, 'documentTitle'),
-      processing: value(row, 'processingStatus', 'documentStatus', 'status')
+      processing: value(row, 'processingStatus', 'documentStatus', 'status'),
+      stage: value(row, 'step'),
+      trialNumber: number(value(row, 'trialNumber'))
     }));
     let rows;
     let status = 'complete';
@@ -282,8 +318,12 @@ const Kipris = (() => {
         continue;
       }
       const existing = unique.get(row.id);
-      if (existing && (existing.title !== row.title || existing.date !== row.date)) status = 'pagination';
-      if (!existing) unique.set(row.id, { ...row, kind: documentType(row.title) });
+      if (existing && (existing.title !== row.title || existing.date !== row.date
+        || existing.trialNumber !== row.trialNumber || existing.stage !== row.stage)) {
+        unique.set(row.id, { ...existing, kind: 'OTHER', trialNumber: '' });
+        status = 'pagination';
+      }
+      if (!existing) unique.set(row.id, { ...row, kind: documentType(row.title, row) });
     }
     return { status: unique.size || status !== 'complete' ? status : 'empty',
       rows: [...unique.values()].sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id)) };
@@ -320,13 +360,20 @@ const Kipris = (() => {
 
   async function pdfLocations(kind, app, key, signal, sendNumber) {
     if (isGazette(kind)) {
-      const method = kind === 'PUB' ? 'getPubFullTextInfoSearch' : 'getAnnFullTextInfoSearch';
+      const stem = kind === 'PUB' ? 'Pub' : 'Ann';
+      const method = 'get' + stem + 'FullTextInfoSearch';
       const parse = rows => Promise.all(rows.map(row => gazetteLocation(kind, app, row)));
       // Keep pagination fingerprints serializable without keeping the XML tree's parent links.
       const rowsFrom = root => records(root, 'path', row => Object.fromEntries(
         ['path', 'docName', 'publicationNumber', 'registrationNumber', 'openNumber', 'registerNumber', 'applicationNumber']
           .map(field => [field, value(row, field)])));
-      try { return await parse(await allRecords(gazette + method, app, key, signal, rowsFrom)); }
+      try {
+        let rows;
+        try { rows = await allRecords(gazette + method, app, key, signal, rowsFrom); }
+        catch (error) { if (error.code !== 'not_found') throw error; }
+        return await parse(rows?.length ? rows
+          : await allRecords(gazette + 'getStandard' + stem + 'FullTextInfoSearch', app, key, signal, rowsFrom));
+      }
       catch (error) {
         if (error.partial) error.partial = await parse(error.partial);
         throw error;
@@ -337,6 +384,43 @@ const Kipris = (() => {
       id: number(value(row, 'sendNumber')), application: number(value(row, 'applicationNumber')),
       path: value(row, 'filePath')
     })), sendNumber);
+  }
+
+  async function correctionLocations(app, key, signal) {
+    return allRecords(correctionPath, app, key, signal, root =>
+      nodes(root, 'revisionfullDocPDFInfo').map(row => {
+        const description = value(row, 'typeDescription').normalize('NFKC').replace(/\s/g, '');
+        const kind = /정정공[보고]\(공개\)/.test(description) ? 'CORR_PUB'
+          : /정정공[보고]\(등록\)/.test(description) ? 'CORR_REG' : '';
+        return { kind, application: number(value(row, 'applicationNumber')), date: date(value(row, 'date')),
+          serial: value(row, 'number'), typeCode: value(row, 'typeCode'), path: value(row, 'path') };
+      }));
+  }
+
+  async function trialSummary(doc, app, key, signal) {
+    const path = rest + trialPath + 'trialBibliographicSummaryInfo';
+    const rows = await allRecords(path, app, key, signal, root =>
+      nodes(root, 'trialBibliographicSummaryInfo').map(row => ({
+        trialNumber: number(value(row, 'TrialNumber')), application: number(value(row, 'ApplicationNumber')),
+        trialNumberName: number(value(row, 'TrialNumberName')).normalize('NFKC'),
+        decisionDate: date(value(row, 'TrialdecisionDate'))
+      })), null, doc.trialNumber);
+    if (rows.length !== 1 || rows[0].trialNumber !== doc.trialNumber || rows[0].application !== app) {
+      throw new Error(rows.length ? 'identity' : 'not_found');
+    }
+    return rows[0];
+  }
+
+  async function trialDecisionLocations(doc, app, key, signal) {
+    if (!validTrialNumber(doc.trialNumber) || [app, doc.id].includes(doc.trialNumber)) throw new Error('missing_trial_number');
+    const supplement = doc.kind === 'TRIAL_SUPPLEMENT';
+    const path = (supplement ? rest : modern) + trialPath
+      + (supplement ? 'trialSupplementaryDecisionInfo' : 'getJudDocumentInfoSearch');
+    return allRecords(path, app, key, signal, root =>
+      nodes(root, supplement ? 'trialSupplementaryDecisionInfo' : 'item').map(row => ({
+        path: value(row, 'path'), fileName: value(row, 'fileName'), open: value(row, 'openYN'),
+        trialNumber: number(value(row, 'trialNumber'))
+      })), null, doc.trialNumber);
   }
 
   async function getClaimHistory(app, key, signal) {
@@ -392,6 +476,11 @@ const Kipris = (() => {
     if (bytes.length < 128 || !trailer.includes('%%EOF')) throw new Error('pdf_incomplete');
   }
 
+  function correctionSerial(text) {
+    const compact = text.normalize('NFKC').replace(/\s/g, '');
+    return compact.match(/정정(?:공고|공보)(?:일련|순번|연번|회차|번호)[:：]?(\d+)(?![-\d])/)?.[1];
+  }
+
   async function inspectPdf(bytes, app, doc, extract) {
     checkPdfBytes(bytes);
     let parsed;
@@ -408,11 +497,23 @@ const Kipris = (() => {
     const compact = first.normalize('NFKC').replace(/[\s-]/g, '');
     const dates = [...first.matchAll(/(?<!\d)(\d{4})(?:[.\/-]\s*|\s*년\s*)?(\d{1,2})(?:[.\/-]\s*|\s*월\s*)?(\d{1,2})(?!\d)/g)]
       .map(([, year, month, day]) => year + month.padStart(2, '0') + day.padStart(2, '0'));
-    const titleOk = doc.kind === 'PUB' ? /공개.*공보/.test(compact)
-      : doc.kind === 'REG' ? /등록.*공보/.test(compact)
-      : doc.kind === 'ATTACHMENT' || documentType(compact) === doc.kind || compact.includes(doc.title.replace(/\s/g, ''));
+    const kind = doc.legacyKind || doc.kind;
+    const titleOk = kind === 'PUB' ? /공개.*공보/.test(compact)
+      : kind === 'REG' ? /등록.*공보/.test(compact)
+      : kind === 'ATTACHMENT' || documentType(compact) === kind || !!doc.title && compact.includes(doc.title.replace(/\s/g, ''));
     const gazetteNumber = isGazette(doc.kind) && gazetteNumberInPdf(doc.kind, first);
-    const idOk = doc.kind === 'CITATION'
+    const trialNumbers = [...first.normalize('NFKC').matchAll(
+      /(?:사[ \t]*건|심[ \t]*판[ \t]*번[ \t]*호)[ \t:：]*(\d{4}[ \t-]*[가-힣]{1,4}[ \t-]*\d{1,7}|\d{13})(?!\d)/g)]
+      .map(match => number(match[1]));
+    const trialId = trialNumbers.includes(doc.trialNumber) || trialNumbers.includes(doc.trialNumberName);
+    const trialTitle = kind === 'TRIAL_SUPPLEMENT' ? /경정결정/.test(compact) : /심결(?:문|서)?/.test(compact);
+    const correctionTitle = /정정공[보고]/.test(compact) && (kind === 'CORR_REG'
+      ? /등록/.test(compact) && !!gazetteNumberInPdf('REG', first)
+      : /공개/.test(compact) && !!gazetteNumberInPdf('PUB', first));
+    const idOk = isTrialDecision(doc.kind) ? trialId && trialTitle && dates.includes(doc.decisionDate || doc.date)
+      : isCorrectionGazette(doc.kind) ? compact.includes(app) && correctionTitle && dates.includes(doc.date)
+        && (!doc.sameDateCorrection || correctionSerial(first) === doc.correctionSerial)
+      : doc.kind === 'CITATION'
       ? first.normalize('NFKC').toUpperCase().replace(/[^A-Z0-9]/g, '').includes(doc.citationNumber)
       : compact.includes(app) && titleOk && (isGazette(doc.kind)
         ? !!gazetteNumber && (!doc.gazetteNumber || doc.gazetteNumber === gazetteNumber)
@@ -426,7 +527,8 @@ const Kipris = (() => {
     };
   }
 
-  return { Error, messages, applicationNumber, documentType, normalizedTitle, safePdfURL, getHistory, pdfLocations,
+  return { Error, messages, documentStatus, historyDocumentStatus, applicationNumber, documentType, normalizedTitle, safePdfURL, getHistory, pdfLocations,
     getClaimHistory, registeredClaims, download, checkPdfBytes, inspectPdf, citations, maxPdf, apiPdfKinds,
-    canRetryExtraction, isGazette, gazetteNumberInPdf };
+    canRetryExtraction, isGazette, gazetteNumberInPdf, isCorrectionGazette, isTrialDecision,
+    correctionLocations, trialDecisionLocations, validTrialNumber, trialSummary };
 })();

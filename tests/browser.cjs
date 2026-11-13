@@ -10,6 +10,15 @@ const pubNumbers = ['1099990000011', '1099990000012'];
 const pubPdfs = pubNumbers.map(number => testPdf(['공개특허공보', '출원번호 ' + app, '공개번호 ' + number]));
 const opinionId = '119999000000001';
 const opinionPdf = testPdf(['의견서', '출원번호 ' + app, '접수번호 ' + opinionId, '2099.01.03']);
+const registeredApp = '1099990000003';
+const registration = '109999003';
+const trial = '2099100000123';
+const regDecisionId = '959999000000010';
+const regPdf = testPdf(['등록특허공보', '출원번호 ' + registeredApp, '등록번호 ' + registration,
+  '등록일자 2099.01.05', '전체 청구항 수 : 총 1 항', '청구항 1', '센서 장치']);
+const trialPdf = testPdf(['심결문', '사건 2099당123', '2099.01.09']);
+const correctionPdf = testPdf(['정정공고(공개)', '출원번호 ' + registeredApp,
+  '공개번호 1099990000004', '2099.01.11']);
 const rotatingApp = '1099990000002';
 const rotatingNumber = '1099990000013';
 const rotatingPdf = testPdf(['공개특허공보', '출원번호 ' + rotatingApp, '공개번호 ' + rotatingNumber]);
@@ -32,7 +41,7 @@ async function main() {
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     page.on('dialog', dialog => dialog.dismiss());
-    await worker.evaluate(({ app, send, date, pdf, pubNumbers, pubPdfs, opinionId, rotatingApp, rotatingPdf }) => {
+    await worker.evaluate(({ app, send, date, pdf, pubNumbers, pubPdfs, opinionId, rotatingApp, rotatingPdf, registeredApp, registration, trial, regDecisionId, regPdf, trialPdf, correctionPdf }) => {
       const fetchOriginal = globalThis.fetch;
       globalThis.fixtureRequests = { kipris: 0, model: 0, pdf: 0, rotating: 0 };
       const createOffscreen = chrome.offscreen.createDocument.bind(chrome.offscreen);
@@ -61,6 +70,42 @@ async function main() {
           + body + '</body></response>', { headers: { 'content-type': 'application/xml' } });
         if (url.hostname === 'plus.kipris.or.kr') {
           globalThis.fixtureRequests.kipris++;
+          if (url.searchParams.get('applicationNumber') === registeredApp) {
+            const row = (id, title, date, step, trialNumber = 'N/A') =>
+              '<item><applicationNumber>' + registeredApp + '</applicationNumber><documentNumber>' + id
+              + '</documentNumber><documentTitle>' + title + '</documentTitle><documentDate>' + date
+              + '</documentDate><step>' + step + '</step><trialNumber>' + trialNumber + '</trialNumber></item>';
+            if (url.pathname.includes('relatedDocsonfileInfo')) return response('<items>'
+              + row('119999000000101', '[특허출원]특허출원서', '20990101', '출원')
+              + row(regDecisionId, '등록결정서', '20990104', '출원')
+              + row('119999000000103', '[심판]의견서', '20990106', '심판', trial)
+              + row('119999000000104', '[심판]보정서', '20990107', '심판', trial)
+              + row('119999000000105', '심결문', '20990110', '심판', trial)
+              + row('119999000000106', '[증서재발급]등록증 정정신청서', '20990110', '등록')
+              + '</items>');
+            if (url.pathname.includes('IntermediateDocumentRGService')) return new Response(null, { status: 403 });
+            if (url.pathname.includes('getAnnFullTextInfoSearch')) return response('<items><item><registrationNumber>'
+              + registration + '</registrationNumber><path>https://plus.kipris.or.kr/registration.pdf</path></item></items>');
+            if (url.pathname.endsWith('/revisionfullDocPDFInfo')) return response('<items><revisionfullDocPDFInfo>'
+              + '<applicationNumber>' + registeredApp + '</applicationNumber><number>1</number><typeCode>B0101</typeCode>'
+              + '<typeDescription>정정공보(공개)전문</typeDescription><date>20990111</date>'
+              + '<path>https://plus.kipris.or.kr/correction.pdf</path></revisionfullDocPDFInfo></items>');
+            if (url.pathname.endsWith('/patentClaimInfo')) return response('<items><claim>센서 장치</claim></items>');
+            return response('<items/>');
+          }
+          if (url.pathname.endsWith('/getJudDocumentInfoSearch') && url.searchParams.get('trialNumber') === trial) {
+            if (url.searchParams.has('applicationNumber')) throw new Error('Fixture: wrong trial identifier');
+            return response('<item><fileName>' + trial + '.PDF</fileName><openYN>Y</openYN>'
+              + '<path>https://plus.kipris.or.kr/trial.pdf</path></item>');
+          }
+          if (url.pathname.endsWith('/trialBibliographicSummaryInfo') && url.searchParams.get('TrialNumber') === trial) {
+            return response('<items><trialBibliographicSummaryInfo><TrialNumber>' + trial + '</TrialNumber>'
+              + '<ApplicationNumber>' + registeredApp + '</ApplicationNumber><TrialNumberName>2099당123</TrialNumberName>'
+              + '<TrialdecisionDate>20990109</TrialdecisionDate></trialBibliographicSummaryInfo></items>');
+          }
+          if (url.pathname === '/registration.pdf') return new Response(regPdf);
+          if (url.pathname === '/trial.pdf') return new Response(trialPdf);
+          if (url.pathname === '/correction.pdf') return new Response(correctionPdf);
           if (url.searchParams.get('applicationNumber') === rotatingApp) {
             if (!url.pathname.includes('getPubFullTextInfoSearch')) return response('<items/>');
             const ticket = ++globalThis.fixtureRequests.rotating;
@@ -111,20 +156,32 @@ async function main() {
         settings: { onboardingDismissed: true },
         code_session: { prompt: '레거시', html: '<p>이전 세션</p>' }
       });
-    }, { app, send, date, pdf: testPdf(), pubNumbers, pubPdfs, opinionId, rotatingApp, rotatingPdf });
+    }, { app, send, date, pdf: testPdf(), pubNumbers, pubPdfs, opinionId, rotatingApp, rotatingPdf, registeredApp, registration, trial, regDecisionId, regPdf, trialPdf, correctionPdf });
     const browserCode = [];
+    let delayed;
+    let releaseDelayed;
+    const held = new Promise(resolve => { releaseDelayed = resolve; });
+    const requestedDelay = new Promise(resolve => { delayed = resolve; });
     await page.route('https://api.exaone.ai/v1/chat/completions', async route => {
       const body = route.request().postDataJSON();
       assert.equal(route.request().headers().authorization, 'Bearer fixture-exaone');
       const ordinary = body.messages.at(-1).content === '일반 대화 회귀';
       const coding = body.messages.length > 1 && /existingFiles/.test(body.messages[1].content)
         ? JSON.parse(body.messages[1].content) : null;
-      const content = ordinary ? JSON.stringify({ mood: 'smile', message: '대화 응답 확인' })
+      if (coding?.request === '늦은 코드') {
+        delayed();
+        await held;
+      }
+      if (coding && !body.stream) browserCode.push(coding);
+      if (coding?.request === '모델 오류') return route.fulfill({ status: 400, json: { error: { message: 'fixture' } } });
+      const content = coding?.request === '잘못된 결과' ? '코드 블록 없음'
+        : coding?.request === '새 웹 프로젝트' ? 'File: 화면/index.html\n```html\n<p>새 프로젝트</p>\n```\nFile: 화면/app.js\n```javascript\nconsole.log("웹");\n```'
+        : ordinary ? JSON.stringify({ mood: 'smile', message: '대화 응답 확인' })
         : body.messages[0].role === 'user' ? 'OK'
         : coding?.request === '두 번째 파일을 추가해 주세요' ? 'File: second.py\n```python\nprint("second")\n```'
         : 'File: main.py\n```python\nprint("안녕")\n```\nFile: README.md\n```markdown\n사용법\n```';
-      if (coding && !body.stream) browserCode.push(coding);
-      return route.fulfill({ json: { choices: [{ message: { content }, finish_reason: 'stop' }] } });
+      try { await route.fulfill({ json: { choices: [{ message: { content }, finish_reason: 'stop' }] } }); }
+      catch (error) { if (coding?.request !== '늦은 코드') throw error; }
     });
     await page.goto('chrome-extension://' + id + '/sidepanel.html');
     await page.locator('#btn-pet').waitFor({ state: 'attached' });
@@ -152,16 +209,30 @@ async function main() {
     await page.fill('#message-input', '일반 대화 회귀');
     await page.click('#btn-send');
     await page.waitForFunction(() => document.querySelector('#messages').textContent.includes('대화 응답 확인'));
+    assert.equal(await page.locator('#chat-code-language').isVisible(), false);
+    assert.equal(await page.locator('#chat-file-input').count(), 1);
     await page.check('#chat-code-enabled');
+    await page.locator('#chat-code-language').click();
+    await page.locator('#chat-code-language').press('p');
+    await page.locator('#chat-code-language').press('Enter');
+    await page.selectOption('#chat-code-language', 'python');
     await page.fill('#message-input', 'Python으로 수정해 주세요');
     await page.click('#btn-send');
-    await page.waitForFunction(() => document.querySelectorAll('.code-chat-project code').length === 2);
-    const firstRequest = browserCode[0];
+    await page.locator('.code-chat-project').first().getByText('3개 파일을 준비했습니다.').waitFor();
+    const firstRequest = browserCode.find(request => request.request === 'Python으로 수정해 주세요');
     assert.match(firstRequest.existingFiles[0].content, /이전 세션/);
-    await page.fill('#chat-code-language', 'python');
+    assert.equal(firstRequest.language, 'python');
+    await page.selectOption('#chat-code-language', '__custom__');
+    await page.click('#btn-send');
+    await page.locator('#chat-code-status').getByText('무엇을 만들지 입력해 주세요.').waitFor();
+    await page.fill('#message-input', '직접 입력 누락');
+    await page.click('#btn-send');
+    await page.locator('#chat-code-status').getByText('직접 입력할 언어 이름을 입력해 주세요.').waitFor();
+    await page.fill('#chat-code-language-custom', 'Elixir');
     await page.fill('#message-input', '두 번째 파일을 추가해 주세요');
     await page.click('#btn-send');
-    await page.waitForFunction(() => document.querySelectorAll('.code-chat-project code').length === 3);
+    await page.locator('.code-chat-project').nth(1).getByText('4개 파일을 준비했습니다.').waitFor();
+    assert.equal(browserCode.at(-1).language, 'Elixir');
     const messages = page.locator('.code-chat-project');
     const downloadNames = async button => {
       const download = page.waitForEvent('download');
@@ -189,7 +260,72 @@ async function main() {
     await page.click('#btn-mode-code');
     assert.deepEqual(await downloadNames(page.locator('#btn-code-zip')), ['README.md', 'app.html', 'main.py', 'second.py']);
 
-    console.log('Coding project downloaded');
+    await page.locator('#code-language').click();
+    await page.locator('#code-language').press('Home');
+    await page.locator('#code-language').press('ArrowDown');
+    await page.locator('#code-language').press('Enter');
+    await page.selectOption('#code-language', 'html');
+    await page.fill('#code-prompt', '새 웹 프로젝트');
+    await page.click('#btn-code-gen');
+    await page.locator('#code-status').getByText('2개 파일을 준비했습니다.').waitFor();
+    assert.deepEqual(browserCode.at(-1), { request: '새 웹 프로젝트', language: 'html', existingFiles: [] });
+    assert.deepEqual(await downloadNames(page.locator('#btn-code-zip')), ['화면/app.js', '화면/index.html']);
+    await page.selectOption('#code-file-picker', '화면/app.js');
+    assert.match(await page.locator('#code-files code').textContent(), /console.log/);
+    const javascript = page.waitForEvent('download');
+    await page.locator('#code-files').getByRole('button', { name: '파일 다운로드' }).click();
+    const sourceFile = await javascript;
+    assert.equal(sourceFile.suggestedFilename(), 'app.js');
+    assert.equal(await readFile(await sourceFile.path(), 'utf8'), 'console.log("웹");');
+
+    await page.selectOption('#code-language', 'javascript');
+    await page.fill('#code-prompt', '늦은 코드');
+    await page.click('#btn-code-revise');
+    await Promise.race([requestedDelay, page.locator('#code-status').getByText(/오류|실패|취소/).waitFor()]);
+    await page.click('#btn-mode-chat');
+    await page.fill('#message-input', '중복 요청');
+    await page.click('#btn-send');
+    await page.locator('#chat-code-status').getByText('코드 생성이 진행 중입니다.').waitFor();
+    assert.equal(await page.inputValue('#message-input'), '중복 요청');
+    await page.click('#btn-mode-code');
+    await page.click('#btn-code-cancel');
+    releaseDelayed();
+    await page.locator('#code-status').getByText('코드 생성을 취소했습니다.').waitFor();
+    for (const [prompt, expected] of [
+      ['잘못된 결과', '응답에 완성된 코드 블록이 없습니다.'],
+      ['모델 오류', /오류|실패|400|요청/]
+    ]) {
+      await page.fill('#code-prompt', prompt);
+      await page.click('#btn-code-revise');
+      await page.locator('#code-status').getByText(expected).waitFor();
+      await page.waitForFunction(() => document.querySelector('#btn-code-cancel').disabled);
+      assert.deepEqual(browserCode.at(-1).existingFiles.map(file => file.name).sort(), ['화면/app.js', '화면/index.html']);
+    }
+
+    await page.evaluate(() => {
+      const store = chrome.storage.local.set.bind(chrome.storage.local);
+      chrome.storage.local.set = data => Object.hasOwn(data, 'code_session') ? Promise.reject(new Error('fixture')) : store(data);
+    });
+    await page.fill('#code-prompt', '저장 실패');
+    await page.click('#btn-code-gen');
+    await page.locator('#code-status').getByText('프로젝트를 저장하지 못했습니다.', { exact: false }).waitFor();
+    assert.deepEqual(await downloadNames(page.locator('#btn-code-zip')), ['화면/app.js', '화면/index.html']);
+    await page.reload();
+    await page.locator('#btn-mode-code[aria-selected="true"]').waitFor();
+    assert.equal(await page.inputValue('#code-language'), 'javascript');
+    assert.deepEqual(await downloadNames(page.locator('#btn-code-zip')), ['화면/app.js', '화면/index.html']);
+    await page.click('#btn-mode-chat');
+    await page.locator('#chat-code-language-custom').waitFor();
+    assert.equal(await page.inputValue('#chat-code-language-custom'), 'Elixir');
+    await page.uncheck('#chat-code-enabled');
+    assert.equal(await page.locator('#chat-code-language').isVisible(), false);
+    assert.equal(await page.locator('#chat-code-language-custom').isVisible(), false);
+    await page.fill('#message-input', '일반 대화 회귀');
+    await page.click('#btn-send');
+    await page.waitForFunction(() => document.querySelector('#message-input').value === '');
+    assert.ok(!browserCode.some(request => request.request === '중복 요청' || request.request === '일반 대화 회귀'));
+    console.log('Coding project downloaded and recovered');
+
     await page.click('#btn-mode-work');
     await page.fill('#patent-application', '10-9999-0000001');
     await page.click('#patent-lookup');
@@ -199,12 +335,12 @@ async function main() {
     await notice.getByText('PDF 확보 · 추출 페이지에 연결할 수 없음', { exact: false }).waitFor();
     await page.waitForFunction(() => !document.querySelector('#patent-start').disabled);
     const unverified = page.waitForEvent('download');
-    await notice.getByRole('button', { name: '미검증 PDF 다운로드', exact: true }).click();
+    await notice.getByRole('button', { name: 'PDF 다운로드', exact: true }).click();
     const original = await unverified;
     assert.equal((await readFile(await original.path())).toString('utf8'), testPdf());
     await worker.evaluate(() => { globalThis.fixturePanelUnavailable = false; });
     await notice.getByRole('button', { name: '텍스트 추출 재시도', exact: true }).click();
-    await notice.getByText('원문과 문서 식별 확인', { exact: false }).waitFor();
+    await notice.getByText('원문 검증 완료', { exact: false }).waitFor();
     await page.waitForFunction(() => !document.querySelector('#patent-start').disabled);
     const lookup = await worker.evaluate(() => globalThis.fixtureRequests);
     assert.equal(lookup.model, 0);
@@ -220,9 +356,9 @@ async function main() {
     const gazetteA = page.getByRole('row').filter({ hasText: pubNumbers[0] });
     const gazetteB = page.getByRole('row').filter({ hasText: pubNumbers[1] });
     await gazetteA.getByRole('button', { name: '텍스트 추출 재시도', exact: true }).click();
-    await gazetteA.getByText('원문과 문서 식별 확인', { exact: false }).waitFor();
+    await gazetteA.getByText('원문 검증 완료', { exact: false }).waitFor();
     await gazetteB.getByRole('button', { name: '원문 다시 조회', exact: true }).click();
-    await gazetteB.getByText('원문과 문서 식별 확인', { exact: false }).waitFor();
+    await gazetteB.getByText('원문 검증 완료', { exact: false }).waitFor();
     for (const [index, row] of [gazetteA, gazetteB].entries()) {
       const event = page.waitForEvent('download');
       await row.getByRole('button', { name: 'PDF 다운로드', exact: true }).click();
@@ -254,20 +390,27 @@ async function main() {
     await page.reload();
     await page.click('#btn-mode-work');
     await page.waitForFunction(() => document.querySelector('#patent-report').textContent.includes('시험 근거 문장입니다.'));
-    await worker.evaluate(async () => {
+    const opinion = page.getByRole('row').filter({ hasText: opinionId });
+    await opinion.getByText('원문 PDF 미제공', { exact: false }).waitFor();
+    assert.equal(await page.locator('#patent-attachment').count(), 0);
+    assert.equal(await page.getByRole('button', { name: 'PDF 첨부', exact: true }).count(), 0);
+    await worker.evaluate(async ({ app, opinionId, opinionPdf }) => {
       globalThis.fixtureParserUnavailable = true;
       globalThis.fixturePanelUnavailable = true;
       await chrome.storage.local.remove(CONFIG.storageKeys.kiprisKey);
-    });
-    const opinion = page.getByRole('row').filter({ hasText: opinionId });
-    const chooser = page.waitForEvent('filechooser');
-    await opinion.getByRole('button', { name: 'PDF 첨부', exact: true }).click();
-    await (await chooser).setFiles({ name: 'opinion.pdf', mimeType: 'application/pdf', buffer: Buffer.from(opinionPdf) });
+      const record = await PatentStore.get(app);
+      const bytes = new TextEncoder().encode(opinionPdf);
+      const doc = record.docs.find(item => item.id === opinionId);
+      Object.assign(doc, { status: 'pdf_parser', source: '수동 첨부', hasFile: true, size: bytes.length });
+      await PatentStore.saveWithFile(record, doc.id, bytes);
+    }, { app, opinionId, opinionPdf });
+    await page.reload();
+    await page.click('#btn-mode-work');
     await opinion.getByText('PDF 확보 · 추출 페이지에 연결할 수 없음', { exact: false }).waitFor();
     const beforeRetry = await worker.evaluate(() => globalThis.fixtureRequests.kipris);
     await worker.evaluate(() => { globalThis.fixtureParserUnavailable = false; });
     await opinion.getByRole('button', { name: '텍스트 추출 재시도', exact: true }).click();
-    await opinion.getByText('원문과 문서 식별 확인', { exact: false }).waitFor();
+    await opinion.getByText('원문 검증 완료', { exact: false }).waitFor();
     assert.equal(await worker.evaluate(() => globalThis.fixtureRequests.kipris), beforeRetry);
     await page.click('#patent-delete');
     await opinion.waitFor({ state: 'detached' });
@@ -318,6 +461,24 @@ async function main() {
       return { id: doc.id, state: record.collectionStatus, ticket: globalThis.fixtureRequests.rotating, fileIds };
     }, rotatingApp);
     assert.deepEqual(finalGazette, { id: recovered.id, state: 'complete', ticket: 4, fileIds: [recovered.id] });
+    await page.fill('#patent-application', registeredApp);
+    await page.click('#patent-lookup');
+    await page.getByRole('row').filter({ hasText: '공개공보' }).getByText('이 문서의 원문 PDF가 조회되지 않음').waitFor();
+    for (const title of ['등록공보', '심결문', '정정공보(공개)']) {
+      await page.getByRole('row').filter({ hasText: title }).getByText('원문 검증 완료', { exact: false }).waitFor();
+    }
+    await page.getByRole('row').filter({ hasText: regDecisionId }).getByText('해당 상품 이용 권한 필요').waitFor();
+    await page.waitForFunction(() => !document.querySelector('#patent-start').disabled);
+    const registrationCheck = await worker.evaluate(async app => {
+      const record = await PatentStore.get(app);
+      const reg = record.docs.find(doc => doc.kind === 'REG');
+      return { kinds: record.docs.map(doc => doc.kind),
+        version: PatentRules.verifyRegisteredClaims(record.registeredClaims, reg, record.docs).status };
+    }, registeredApp);
+    assert.ok(registrationCheck.kinds.includes('TRIAL_FILING'));
+    assert.ok(registrationCheck.kinds.includes('TRIAL_DECISION'));
+    assert.ok(!registrationCheck.kinds.includes('AM') && !registrationCheck.kinds.includes('OPINION'));
+    assert.equal(registrationCheck.version, 'verified');
     assert.deepEqual(errors, []);
     console.log('Chromium extension smoke passed: legacy migration, settings, code ZIP, PDF extraction, consent, diagnosis, restore, delete.');
   } finally {

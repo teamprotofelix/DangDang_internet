@@ -38,9 +38,9 @@ const PatentWorker = (() => {
   function snapshot(record) {
     if (!record) return null;
     const { application, runId, phase, state, historyStatus, claimStatus, registeredClaimStatus,
-      collectionStatus, queriedAt, docs, report, error } = record;
+      collectionStatus, correctionStatus, queriedAt, docs, report, error } = record;
     return { application, runId, phase, state, historyStatus, claimStatus, registeredClaimStatus,
-      collectionStatus, queriedAt, docs: docs.map(({ pages, identityVerified, ...doc }) => doc), report, error };
+      collectionStatus, correctionStatus, queriedAt, docs: docs.map(({ pages, identityVerified, ...doc }) => doc), report, error };
   }
 
   function newCase(application) {
@@ -125,21 +125,36 @@ const PatentWorker = (() => {
 
   async function collect(record, key, signal, onlyId) {
     const app = record.application;
-    const cached = ['complete', 'empty'].includes(record.historyStatus)
+    const cached = record.historyClassification === 2 && ['complete', 'empty'].includes(record.historyStatus)
       && Date.now() - Date.parse(record.queriedAt) < 10 * 60 * 1000;
     if (!cached && !onlyId) {
       record.queriedAt = new Date().toISOString();
       try {
         const { status, rows } = await Kipris.getHistory(app, key, signal);
         record.historyStatus = status;
+        record.historyClassification = 2;
         const old = new Map(record.docs.map(doc => [doc.id, doc]));
         record.docs = rows.map(row => {
           const saved = old.get(row.id);
-          return saved?.hasFile && saved.kind === row.kind && saved.date === row.date && saved.title === row.title
-            ? { ...row, ...saved, processing: row.processing }
-            : { ...row, status: ['OA', 'RD', 'RG'].includes(row.kind) ? 'pending'
-              : ['APP', 'AM', 'OPINION', 'CORRECTION'].includes(row.kind) ? 'manual' : 'other' };
-        }).concat(record.docs.filter(doc => ['PUB', 'REG'].includes(doc.kind) || doc.kind === 'CITATION'));
+          if (saved?.hasFile && saved.date === row.date && saved.title === row.title) {
+            const doc = { ...saved, ...row };
+            if (saved.kind !== row.kind || Kipris.isTrialDecision(row.kind) && saved.trialNumber !== row.trialNumber) {
+              if (saved.kind !== row.kind) doc.legacyKind = saved.legacyKind || saved.kind;
+              Object.assign(doc, { status: 'pdf_extract_pending', pages: [], pageCount: null, identityVerified: false });
+              record.report = null;
+            }
+            return doc;
+          }
+          return { ...row, status: Kipris.historyDocumentStatus(row.kind) };
+        });
+        const ids = new Set(record.docs.map(doc => doc.id));
+        record.docs.push(...[...old.values()].filter(doc => !ids.has(doc.id) && (doc.hasFile
+          || Kipris.isGazette(doc.kind) || Kipris.isCorrectionGazette(doc.kind) || doc.kind === 'CITATION')).map(doc => {
+          if (Kipris.isGazette(doc.kind) || Kipris.isCorrectionGazette(doc.kind) || doc.kind === 'CITATION') return doc;
+          // Keep the bytes and allow local extraction, but the current history cannot corroborate this row.
+          record.report = null;
+          return { ...doc, kind: 'ARCHIVED', legacyKind: doc.legacyKind || doc.kind };
+        }));
         record.claimStatus = record.registeredClaimStatus = 'pending';
         record.claimHistory = null;
         record.registeredClaims = null;
@@ -265,6 +280,73 @@ const PatentWorker = (() => {
       await PatentStore.save(record);
     }
 
+    const requested = onlyId && record.docs.find(doc => doc.id === onlyId);
+    if ((!onlyId && (!cached || !['complete', 'not_found'].includes(record.correctionStatus)))
+      || requested && Kipris.isCorrectionGazette(requested.kind)) {
+      let locations = [];
+      let lookupError;
+      try { locations = await Kipris.correctionLocations(app, key, signal); }
+      catch (error) {
+        signal.throwIfAborted();
+        lookupError = reason(error);
+      }
+      record.correctionStatus = lookupError || (locations.length ? 'complete' : 'not_found');
+      const byId = new Map();
+      for (const row of locations) {
+        if (!row.kind || row.application !== app || !row.date || !/^\d+$/.test(row.serial) || !row.typeCode) continue;
+        const id = [row.kind, row.typeCode, row.date, row.serial].join('-');
+        const existing = byId.get(id);
+        if (existing && existing.path !== row.path) existing.conflict = true;
+        else if (!existing) byId.set(id, row);
+      }
+      for (const [id, row] of byId) {
+        if (onlyId && id !== onlyId) continue;
+        const title = row.kind === 'CORR_PUB' ? '정정공보(공개)' : '정정공보(등록)';
+        const existing = record.docs.find(doc => doc.id === id);
+        const doc = existing || { id, title, kind: row.kind, date: row.date, status: 'pending' };
+        if (!existing) {
+          record.docs.push(doc);
+          record.report = null;
+        }
+        if (doc.hasFile) continue;
+        doc.correctionSerial = row.serial;
+        doc.sameDateCorrection = [...byId.values()].some(other =>
+          other !== row && other.kind === row.kind && other.date === row.date);
+        if (row.conflict) doc.status = 'identity';
+        else await fetchDocument(doc, row.path);
+      }
+      for (const doc of record.docs.filter(doc => Kipris.isCorrectionGazette(doc.kind) && !doc.hasFile
+        && (!onlyId || doc.id === onlyId) && !byId.has(doc.id))) {
+        doc.status = lookupError || (locations.length ? 'identity' : 'not_found');
+      }
+      await PatentStore.save(record);
+    }
+
+    const trialDecisions = record.docs.filter(doc => Kipris.isTrialDecision(doc.kind) && !doc.hasFile
+      && (!onlyId || doc.id === onlyId));
+    for (const doc of trialDecisions) {
+      let rows;
+      try {
+        rows = await Kipris.trialDecisionLocations(doc, app, key, signal);
+        if (rows.length) {
+          const summary = await Kipris.trialSummary(doc, app, key, signal);
+          doc.trialNumberName = summary.trialNumberName;
+          if (doc.kind === 'TRIAL_DECISION') doc.decisionDate = summary.decisionDate;
+        }
+      } catch (error) {
+        signal.throwIfAborted();
+        doc.status = reason(error);
+        continue;
+      }
+      const eligible = rows.filter(row => doc.kind === 'TRIAL_SUPPLEMENT' || row.open.toUpperCase() === 'Y');
+      const paths = new Set(eligible.filter(row =>
+        (!row.trialNumber || row.trialNumber === doc.trialNumber)
+        && row.fileName.toLowerCase() === doc.trialNumber + '.pdf').map(row => row.path));
+      if (paths.size === 1) await fetchDocument(doc, [...paths][0]);
+      else doc.status = !eligible.length ? 'not_found' : 'identity';
+    }
+    if (trialDecisions.length) await PatentStore.save(record);
+
     if (!onlyId && record.claimStatus !== 'complete' && record.docs.some(doc => doc.kind === 'OA')) {
       try {
         record.claimHistory = await Kipris.getClaimHistory(app, key, signal);
@@ -287,14 +369,14 @@ const PatentWorker = (() => {
         let doc = record.docs.find(item => item.id === id);
         if (!doc) {
           doc = { id, title: '인용발명 ' + citation.citationLabel, citationNumber: citation.citationNumber,
-            kind: 'CITATION', status: 'manual', citedBy: [] };
+            kind: 'CITATION', status: 'metadata_only', citedBy: [] };
           record.docs.push(doc);
         }
         if (!doc.citedBy.includes(notice.id)) doc.citedBy.push(notice.id);
       }
     }
     record.collectionStatus = ['complete', 'empty'].includes(record.historyStatus)
-      && record.docs.every(doc => ['verified', 'other', 'not_found'].includes(doc.status)
+      && record.docs.every(doc => ['verified', 'other', 'metadata_only', 'not_found'].includes(doc.status)
         && (!['OA', 'RD', 'RG', 'REG'].includes(doc.kind) || doc.hasFile))
       ? 'complete' : 'partial';
   }
@@ -378,7 +460,7 @@ const PatentWorker = (() => {
       return bytes ? { doc: { id: doc.id, title: doc.title } } : { error: '로컬 원문이 없습니다.' };
     }
 
-    if (!['kipris_delete', 'kipris_attach', 'kipris_start', 'kipris_extract_retry'].includes(type)) return { error: '지원하지 않는 요청입니다.' };
+    if (!['kipris_delete', 'kipris_start', 'kipris_extract_retry'].includes(type)) return { error: '지원하지 않는 요청입니다.' };
     if (active.has(app)) return { record: await status(app), error: '이 출원번호의 작업이 이미 진행 중입니다.' };
     if (['kipris_start', 'kipris_extract_retry'].includes(type) && active.size) return { error: '다른 출원번호의 작업이 진행 중입니다.' };
     const job = { controller: new AbortController() };
@@ -390,16 +472,6 @@ const PatentWorker = (() => {
         return { record: null };
       }
       const record = await PatentStore.get(app) || newCase(app);
-      if (type === 'kipris_attach') {
-        const doc = record.docs.find(item => item.id === data.id);
-        if (!doc || !['APP', 'AM', 'OPINION', 'CORRECTION', 'OA', 'RD', 'RG', 'PUB', 'REG', 'CITATION'].includes(doc.kind)) {
-          return { error: '첨부할 문서를 목록에서 선택해 주세요.' };
-        }
-        if (typeof data.encoded !== 'string' || data.encoded.length > Math.ceil(Kipris.maxPdf / 3) * 4) throw new Kipris.Error('pdf');
-        await savePdf(record, doc, Uint8Array.from(atob(data.encoded), ch => ch.charCodeAt(0)), '수동 첨부');
-        return { record: snapshot(record) };
-      }
-
       let config;
       const onlyId = data.documentId;
       const onlyDoc = record.docs.find(doc => doc.id === onlyId);

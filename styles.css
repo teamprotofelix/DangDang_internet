@@ -1792,7 +1792,10 @@ textarea:focus-visible {
   padding-top: 6px;
 }
 .chat-code-controls label { white-space: nowrap; font-size: .85rem; }
-.chat-code-controls input.setting-input { width: min(55%, 150px); margin: 0; padding: 3px 6px; }
+.chat-code-controls { flex-wrap: wrap; }
+.chat-code-controls .setting-input { width: auto; max-width: 150px; margin: 0; padding: 3px 6px; }
+#chat-code-status { font-size: .8rem; }
+.code-scroll [hidden] { display: none; }
 .chat-code-controls [hidden] { display: none; }
 .code-gen-row { flex-wrap: wrap; }
 .code-file-card { margin: 12px 0; min-width: 0; }
