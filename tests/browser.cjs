@@ -16,7 +16,7 @@ const rotatingPdf = testPdf(['공개특허공보', '출원번호 ' + rotatingApp
 
 async function main() {
   const profile = await mkdtemp(path.join(os.tmpdir(), 'dangdang-chromium-'));
-  const extension = path.resolve(__dirname, '..');
+  const extension = path.resolve(process.env.DANGDANG_EXTENSION_DIR || path.resolve(__dirname, '..'));
   let context;
   try {
     context = await chromium.launchPersistentContext(profile, {
@@ -37,11 +37,16 @@ async function main() {
       globalThis.fixtureRequests = { kipris: 0, model: 0, pdf: 0, rotating: 0 };
       const createOffscreen = chrome.offscreen.createDocument.bind(chrome.offscreen);
       globalThis.fixtureParserUnavailable = true;
+      globalThis.fixturePanelUnavailable = true;
       let gazetteLookups = 0;
       const sendMessage = chrome.runtime.sendMessage.bind(chrome.runtime);
       chrome.runtime.sendMessage = (...args) => {
         if (args[0]?.type === 'kipris_pdf_parse' && globalThis.fixtureParserUnavailable) {
           return Promise.reject(new Error('Fixture: parser unavailable'));
+        }
+        if (args[0]?.type === 'kipris_pdf_parse_panel') {
+          if (globalThis.fixturePanelUnavailable) return Promise.reject(new Error('Fixture: panel unavailable'));
+          globalThis.fixtureRequests.panel = (globalThis.fixtureRequests.panel || 0) + 1;
         }
         return sendMessage(...args);
       };
@@ -125,6 +130,7 @@ async function main() {
     await page.locator('#btn-pet').waitFor({ state: 'attached' });
     console.log('Companion panel loaded');
     assert.equal(await page.locator('#toggle-content-aware').isChecked(), false);
+    assert.equal(await page.locator('#input-max-tokens').inputValue(), '30000');
     await page.click('#btn-mode-code');
     await page.waitForSelector('#code-files code');
     assert.match(await page.locator('#code-files code').textContent(), /이전 세션/);
@@ -190,19 +196,21 @@ async function main() {
     const notice = page.getByRole('row').filter({ hasText: '의견제출통지서' });
     await notice.getByText('PDF 다운로드 경로가 만료됐거나 서버에서 찾을 수 없음').waitFor();
     await notice.getByRole('button', { name: '원문 다시 조회', exact: true }).click();
-    await notice.getByText('PDF 확보 · 텍스트 추출기를 실행할 수 없음', { exact: false }).waitFor();
+    await notice.getByText('PDF 확보 · 추출 페이지에 연결할 수 없음', { exact: false }).waitFor();
     await page.waitForFunction(() => !document.querySelector('#patent-start').disabled);
     const unverified = page.waitForEvent('download');
     await notice.getByRole('button', { name: '미검증 PDF 다운로드', exact: true }).click();
     const original = await unverified;
     assert.equal((await readFile(await original.path())).toString('utf8'), testPdf());
-    await worker.evaluate(() => { globalThis.fixtureParserUnavailable = false; });
+    await worker.evaluate(() => { globalThis.fixturePanelUnavailable = false; });
     await notice.getByRole('button', { name: '텍스트 추출 재시도', exact: true }).click();
     await notice.getByText('원문과 문서 식별 확인', { exact: false }).waitFor();
     await page.waitForFunction(() => !document.querySelector('#patent-start').disabled);
     const lookup = await worker.evaluate(() => globalThis.fixtureRequests);
     assert.equal(lookup.model, 0);
     assert.equal(lookup.pdf, 2);
+    assert.equal(lookup.panel, 1);
+    await worker.evaluate(() => { globalThis.fixtureParserUnavailable = false; });
     const source = page.waitForEvent('download');
     await notice.getByRole('button', { name: 'PDF 다운로드', exact: true }).click();
     assert.match((await source).suggestedFilename(), /959999000000001\.pdf$/);
@@ -248,13 +256,14 @@ async function main() {
     await page.waitForFunction(() => document.querySelector('#patent-report').textContent.includes('시험 근거 문장입니다.'));
     await worker.evaluate(async () => {
       globalThis.fixtureParserUnavailable = true;
+      globalThis.fixturePanelUnavailable = true;
       await chrome.storage.local.remove(CONFIG.storageKeys.kiprisKey);
     });
     const opinion = page.getByRole('row').filter({ hasText: opinionId });
     const chooser = page.waitForEvent('filechooser');
     await opinion.getByRole('button', { name: 'PDF 첨부', exact: true }).click();
     await (await chooser).setFiles({ name: 'opinion.pdf', mimeType: 'application/pdf', buffer: Buffer.from(opinionPdf) });
-    await opinion.getByText('PDF 확보 · 텍스트 추출기를 실행할 수 없음', { exact: false }).waitFor();
+    await opinion.getByText('PDF 확보 · 추출 페이지에 연결할 수 없음', { exact: false }).waitFor();
     const beforeRetry = await worker.evaluate(() => globalThis.fixtureRequests.kipris);
     await worker.evaluate(() => { globalThis.fixtureParserUnavailable = false; });
     await opinion.getByRole('button', { name: '텍스트 추출 재시도', exact: true }).click();

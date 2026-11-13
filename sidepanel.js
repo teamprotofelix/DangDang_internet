@@ -771,7 +771,7 @@ class SidePanelController {
     this._keyOrigin = normalizeApiOrigin(settings.apiBase || '');
 
     // maxTokens 슬라이더
-    const maxTokens = settings.maxTokens || 25000;
+    const maxTokens = settings.maxTokens || CONFIG.api.maxTokens;
     const tokenSlider = document.getElementById('input-max-tokens');
     if (tokenSlider) {
       tokenSlider.value = maxTokens;
@@ -1118,7 +1118,7 @@ class SidePanelController {
     const apiBase = document.getElementById('input-api-base').value.trim();
     const model = document.getElementById('input-model').value.trim();
     const apiKey = document.getElementById('input-api-key').value.trim();
-    const maxTokens = Math.min(55000, Math.max(256, parseInt(document.getElementById('input-max-tokens').value) || 25000));
+    const maxTokens = Math.min(55000, Math.max(256, parseInt(document.getElementById('input-max-tokens').value) || CONFIG.api.maxTokens));
     const pageChars = parseInt(document.getElementById('input-page-chars').value) || 5000;
     const presetId = document.getElementById('preset-selector').value;
     const modelContextTokens = parseInt(document.getElementById('input-model-context')?.value) || 32768;

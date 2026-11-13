@@ -4,6 +4,48 @@ const PatentDiagnosis = (() => {
   const full = doc => doc.status === 'verified';
   const notChecked = (target, rule, reason) => ({ target, rule, code: null, level: '확인 불가',
     evidence: [], comparison: '검토 보류', analysis: reason, verdict: reason });
+  function citesSupportProvision(text) {
+    // 인용이 이어지는 동안만 조·항을 상속한다. 제42조 제4항 제1호는 뒷받침 요건이다.
+    const nextPart = /(?:및|또는|[,·ᆞ]|과|와)*(?:(같은조)의?|같은항의?|제?(\d+)항|(제?\d+(?:(?:및|또는|[,·ᆞ]|과|와)제?\d+)*)호)/y;
+    for (const article of text.matchAll(/제42조(?!의\d)/g)) {
+      nextPart.lastIndex = article.index + article[0].length;
+      let paragraph;
+      for (let part; (part = nextPart.exec(text));) {
+        const [, sameArticle, explicitParagraph, items] = part;
+        if (sameArticle) paragraph = undefined;
+        else if (explicitParagraph) paragraph = explicitParagraph;
+        else if (paragraph === '4' && items?.split(/\D+/).includes('1')) return true;
+      }
+    }
+    return false;
+  }
+
+  function finalNoticeSources(record, target, version, priorVersions) {
+    const originals = new Set();
+    const citations = record.docs.filter(doc => doc.kind === 'CITATION');
+    for (const { document, version: claims } of [...priorVersions, { document: target.id, version }]) {
+      const notice = record.docs.find(doc => doc.id === document);
+      const text = notice.pages.map(page => page.text).join('').normalize('NFKC').replace(/\s/g, '');
+      const numbered = Kipris.citations(notice.pages);
+      const linked = citations.filter(doc => doc.citedBy?.includes(document)
+        || numbered.some(item => item.citationNumber === doc.citationNumber));
+      if (linked.length || numbered.length || /신규성|진보성|인용발명|인용문헌|선행기술|제29조/.test(text)) {
+        if (!linked.length || linked.some(doc => !full(doc) || !usable(doc))
+          || numbered.some(item => !linked.some(doc => doc.citationNumber === item.citationNumber))) {
+          return { reason: '최후통지 또는 선행 통지의 인용발명 원문을 모두 검증하지 못함' };
+        }
+        linked.forEach(doc => originals.add(doc));
+      }
+      if (citesSupportProvision(text) || /제42조제?3항|실시가능|실시할수없|뒷받침|지원요건|신규사항/.test(text)) {
+        const filings = claims.steps.map(step => record.docs.find(doc => doc.id === step.id));
+        if (filings.some(doc => !doc || !full(doc) || !usable(doc))) {
+          return { reason: '해당 통지 당시의 명세서·도면 또는 보정서 원문을 검증하지 못함' };
+        }
+        filings.forEach(doc => originals.add(doc));
+      }
+    }
+    return { originals: [...originals] };
+  }
 
   function prepare(record) {
     const tasks = [];
@@ -13,7 +55,7 @@ const PatentDiagnosis = (() => {
     for (const target of targets) {
       const family = target.kind === 'REG' ? 'RC' : target.kind;
       const earlier = record.docs.filter(doc => doc.kind === 'OA' && doc.date < target.date);
-      const ambiguous = record.docs.some(doc => doc.kind === 'OA' && doc.date === target.date);
+      const ambiguous = record.docs.some(doc => doc.id !== target.id && doc.kind === 'OA' && doc.date === target.date);
       const earlierComplete = record.historyStatus === 'complete' && earlier.length > 0 && !ambiguous && earlier.every(full);
       const opinion = record.docs.filter(doc => doc.kind === 'OPINION' && doc.date < target.date && usable(doc));
       const version = family === 'OA'
@@ -21,13 +63,22 @@ const PatentDiagnosis = (() => {
         : family === 'RC' ? PatentRules.verifyRegisteredClaims(record.registeredClaimStatus === 'complete'
           ? record.registeredClaims : null, target, record.docs) : null;
       if (version) versions[target.id] = version;
+      const finalNotice = family === 'OA' && (/최후/.test(target.title || '')
+        || /최후\s*(?:의견\s*제출\s*통지서|거절\s*이유\s*통지서)/.test(target.pages?.[0]?.text || ''));
+      const priorVersions = finalNotice && earlierComplete && earlier.every(usable) && version.status === 'reconstructed'
+        ? earlier.map(doc => ({ document: doc.id,
+          version: PatentRules.restoreClaims(record.claimHistory, record.docs, doc) })) : [];
+      const finalSources = full(target) && usable(target) && priorVersions.length
+        && priorVersions.every(item => item.version.status === 'reconstructed')
+        ? finalNoticeSources(record, target, version, priorVersions) : {};
       if (family === 'RC') findings.push(...PatentRules.registeredFindings(target, version));
-      const external = record.docs.filter(doc => (doc.kind === 'CITATION' && doc.citedBy.includes(target.id))
+      const external = record.docs.filter(doc => (doc.kind === 'CITATION' && doc.citedBy?.includes(target.id))
         || (['APP', 'AM'].includes(doc.kind) && doc.id === version?.steps?.at(-1)?.id));
       const selected = [];
       const evidence = [target];
       for (const [suffix, instruction, requires] of PatentRules.groups[family]) {
         const rule = family + '-' + suffix;
+        if (requires === 'final_notice' && !finalNotice) continue;
         let reason = '';
         if (!usable(target)) reason = Kipris.messages[target.status] || '검증된 원문 없음';
         else if (!full(target)) reason = '원문의 일부 페이지를 읽지 못함';
@@ -40,7 +91,10 @@ const PatentDiagnosis = (() => {
           reason = '통지 당시 명세서 또는 인용발명 원문과 판본의 대조가 필요함';
         } else if (requires === 'notices' && !earlierComplete) {
           reason = '결정 이전의 통지 전부 또는 같은 날 통지의 선후관계를 확인하지 못함';
-        }
+        } else if (requires === 'final_notice' && (!priorVersions.length
+          || priorVersions.some(item => item.version.status !== 'reconstructed'))) {
+          reason = '선행 통지 원문, 통지 선후 또는 각 통지 당시의 청구항 판본을 확인하지 못함';
+        } else if (requires === 'final_notice') reason = finalSources.reason;
         if (reason) findings.push(notChecked(target.id, rule, reason));
         else selected.push([rule, instruction]);
       }
@@ -49,7 +103,9 @@ const PatentDiagnosis = (() => {
       if (selected.some(([rule]) => ['OA-07', 'OA-08', 'OA-09', 'OA-14'].includes(rule))) {
         evidence.push(...external.filter(full));
       }
-      if (selected.length) tasks.push({ target, rules: selected, evidence, version });
+      if (selected.length) tasks.push({ target, rules: selected, evidence, version, priorVersions,
+        finalEvidence: [target, ...earlier, ...(finalSources.originals || [])],
+        requiredOriginals: finalSources.originals?.map(doc => doc.id) });
     }
     return { tasks, versions, findings };
   }
@@ -64,104 +120,139 @@ const PatentDiagnosis = (() => {
     '통지서 자체로 복원 가능한 단순오기는 하자로 세지 마세요. 기재요건과 기재방법을 구별하세요.'
   ].join('\n');
 
-  function payload(task, evidence) {
+  function payload(task, evidence, excerpted = false) {
     return [
-      { role: 'system', content: system },
+      { role: 'system', content: system + (excerpted
+        ? '\n문서는 쪽별 원문 발췌입니다. 전수 점검이나 발견 없음은 판단할 수 없습니다. 직접 인용할 수 있는 부분의 조건부 점검만 제시하세요.' : '') },
       { role: 'user', content: JSON.stringify({
         target: task.target.id, rules: task.rules, version: task.version,
+        priorVersions: task.priorVersions,
+        requiredOriginals: task.requiredOriginals,
         documents: evidence.map(({ id, title, kind, date, pages }) => ({ id, title, kind, date, pages }))
       }) }
     ];
+  }
+
+  function excerptPage(page, limit) {
+    if (page.text.length <= limit) return [page];
+    const evidenceCue = /제\s*\d+\s*(?:조|항)|인용발명|인용문헌|거절이유|청구범위|보정|바람직하게|특히/g;
+    const matches = [...page.text.matchAll(evidenceCue)].slice(0, 200);
+    const width = Math.floor(limit / 2);
+    const selected = [{ ...page, text: page.text.slice(0, width) }];
+    const cue = matches.find(match => match.index >= width + 32);
+    const start = cue ? Math.max(width, cue.index - Math.floor(width / 3)) : page.text.length - width;
+    selected.push({ ...page, text: page.text.slice(start, start + width) });
+    return selected;
+  }
+
+  function planEvidence(focused, originals, config, requested) {
+    const minimumOutput = 256;
+    const plan = (evidence, excerpted) => {
+      const messages = payload(focused, evidence, excerpted);
+      const budget = computeRequestBudget({ apiConfig: config, messages, outputReserveTokens: requested });
+      const maxTokens = Math.floor(Math.min(budget.maxOutput, budget.contextLimit - budget.margin - budget.inputTokens));
+      return maxTokens >= minimumOutput ? { evidence, excerpted, messages, maxTokens } : null;
+    };
+    const complete = plan(originals, false);
+    if (complete) return complete;
+
+    // Keep excerpts from every source and page. The claim versions stay intact.
+    const pages = originals.reduce((sum, doc) => sum + doc.pages.length, 0);
+    const budget = computeRequestBudget({ apiConfig: config, outputReserveTokens: minimumOutput });
+    const starting = Math.min(2400, Math.max(100, Math.floor(budget.maxInputTokens / Math.max(1, pages))));
+    for (let limit = starting; limit >= 50; limit = Math.floor(limit / 2)) {
+      const evidence = originals.map(doc => ({ ...doc, pages: doc.pages.flatMap(page => excerptPage(page, limit)) }));
+      const excerpt = plan(evidence, true);
+      if (excerpt) return excerpt;
+    }
+    return null;
   }
 
   async function evaluate(record, config, signal, progress) {
     const { tasks, versions, findings } = prepare(record);
     const used = [];
     const omitted = [];
+    const requested = config.maxTokens || CONFIG.api.maxTokens;
+    const modelLimits = CONFIG.modelLimits.known?.[config.model];
+    const budgetConfig = {
+      ...config,
+      modelContextTokens: Math.min(config.modelContextTokens || Infinity, modelLimits?.contextTokens || Infinity),
+      modelMaxOutputTokens: Math.min(config.modelMaxOutputTokens || Infinity, modelLimits?.maxOutputTokens || Infinity)
+    };
+    if (!Number.isFinite(budgetConfig.modelContextTokens)) delete budgetConfig.modelContextTokens;
+    if (!Number.isFinite(budgetConfig.modelMaxOutputTokens)) delete budgetConfig.modelMaxOutputTokens;
     const client = new LLMClient();
-    client.applyConfig(config);
-    const reserve = Math.min(6000, config.maxTokens || 6000, config.modelMaxOutputTokens || 8192);
-    const options = { maxTokens: reserve, reasoningEffort: 'high', temperature: 0.2, retries: 0,
-      timeoutMs: 90000, bodyTimeoutMs: 65000, signal };
-    let calls = 0;
+    client.applyConfig(budgetConfig);
+    const options = { reasoningEffort: 'high', temperature: 0.2, retries: 0,
+      timeoutMs: 120000, bodyTimeoutMs: 90000, signal };
+    const outputs = [];
 
     for (const task of tasks) {
+      signal.throwIfAborted();
       await progress(task.target.id);
       const batches = [];
-      const held = new Map();
-      // A cross-document rule needs its complete source set in the same request.
       for (const rule of task.rules) {
-        const cross = ['RD-01', 'RD-02', 'RD-03', 'RD-05', 'RD-06', 'OA-07', 'OA-08', 'OA-09', 'OA-14'].includes(rule[0]);
-        const needsVersion = /^RC-/.test(rule[0]) || PatentRules.groups.OA.some(([suffix, , type]) =>
-          rule[0] === 'OA-' + suffix && ['claims', 'external'].includes(type));
-        const focused = { ...task, rules: [rule], version: needsVersion ? task.version : undefined };
-        const evidence = cross ? task.evidence.filter(doc => doc.id === task.target.id
-          || (rule[0].startsWith('OA-') ? ['APP', 'AM', 'CITATION'].includes(doc.kind)
-            : doc.kind === (rule[0] === 'RD-06' ? 'OPINION' : 'OA'))) : [task.target];
-        const fits = (candidate, docs) => computeRequestBudget({
-          apiConfig: config, messages: payload(candidate, docs), outputReserveTokens: reserve
-        }).ok;
-        if (!fits(focused, evidence)) {
-          held.set(rule[0], '전체 비교 원문이 모델 입력 한도를 초과함');
-          omitted.push(...evidence.map(doc => ({ rule: rule[0], target: task.target.id,
-            document: doc.id, pages: doc.pages.map(page => page.page), reason: held.get(rule[0]) })));
-          // Long documents still permit page-level observations for internal rules.
-          if (!cross && !needsVersion && ['OA-02', 'OA-04', 'OA-06', 'OA-13', 'OA-14', 'RD-04'].includes(rule[0])) {
-            const snippets = [];
-            for (const page of task.target.pages) {
-              const parts = page.text.match(/[^\n]+\n?|\n/g) || [];
-              let buffer = '';
-              for (const part of parts.flatMap(line => line.match(/[^]{1,3000}/g) || [])) {
-                if (buffer.length + part.length > 3500) { snippets.push({ ...page, text: buffer }); buffer = ''; }
-                buffer += part;
-              }
-              if (buffer) snippets.push({ ...page, text: buffer });
-            }
-            for (const page of snippets.slice(0, 3)) {
-              const docs = [{ ...task.target, pages: [page] }];
-              if (fits(focused, docs)) batches.push({ focused, evidence: docs, fragment: true });
-            }
-          }
-          continue;
-        }
-        const existing = batches.find(batch => !batch.fragment && batch.focused.version === focused.version
-          && batch.evidence.map(doc => doc.id).join(',') === evidence.map(doc => doc.id).join(',')
-          && batch.focused.rules.length < 5
-          && fits({ ...focused, rules: [...batch.focused.rules, rule] }, evidence));
+        const [id] = rule;
+        const cross = ['OA-07', 'OA-08', 'OA-09', 'OA-14', 'RD-01', 'RD-02', 'RD-03', 'RD-05', 'RD-06'].includes(id);
+        const needsVersion = id.startsWith('RC-') || PatentRules.groups.OA.some(([suffix, , type]) =>
+          id === 'OA-' + suffix && ['claims', 'external', 'final_notice'].includes(type));
+        const focused = { ...task, rules: [rule], version: needsVersion ? task.version : undefined,
+          priorVersions: id === 'OA-15' ? task.priorVersions : undefined,
+          requiredOriginals: id === 'OA-15' ? task.requiredOriginals : undefined };
+        const originals = id === 'OA-15' ? task.finalEvidence : cross ? task.evidence.filter(doc => doc.id === task.target.id
+          || (id.startsWith('OA-') ? ['APP', 'AM', 'CITATION'].includes(doc.kind)
+            : doc.kind === (id === 'RD-06' ? 'OPINION' : 'OA'))) : [task.target];
+        const sources = JSON.stringify(originals.map(doc => doc.id));
+        const existing = batches.find(batch => batch.sources === sources && batch.focused.version === focused.version
+          && batch.focused.priorVersions === focused.priorVersions && batch.focused.rules.length < 5);
         if (existing) existing.focused.rules.push(rule);
-        else batches.push({ focused, evidence });
+        else batches.push({ focused, originals, sources });
       }
 
-      for (const [rule, reason] of held) findings.push(notChecked(task.target.id, rule, reason));
-      for (const { focused, evidence, fragment } of batches) {
+      for (const { focused, originals } of batches) {
         signal.throwIfAborted();
-        if (calls >= 16) {
-          for (const [rule] of focused.rules) findings.push(notChecked(task.target.id, rule, '실행당 모델 호출 한도 도달'));
-          omitted.push(...evidence.map(doc => ({ target: task.target.id, document: doc.id,
-            pages: doc.pages.map(page => page.page), reason: '실행당 모델 호출 한도 도달' })));
+        const planned = outputs.length < 16 && planEvidence(focused, originals, budgetConfig, requested);
+        if (!planned) {
+          const reason = outputs.length >= 16 ? '실행당 모델 호출 한도 도달'
+            : '쪽별 발췌와 필요한 청구항 판본도 모델 입력 한도를 초과함';
+          for (const [rule] of focused.rules) findings.push(notChecked(task.target.id, rule, reason));
+          omitted.push(...originals.map(doc => ({ target: task.target.id, document: doc.id,
+            pages: doc.pages.map(page => page.page), reason })));
           continue;
         }
-        calls++;
-        const messages = payload(focused, evidence);
-        if (fragment) messages[0].content += '\n현재 원문은 일부 발췌입니다. 전체 일치나 발견 없음은 판단할 수 없습니다.';
+        const { evidence, excerpted, messages, maxTokens } = planned;
+        if (excerpted) {
+          omitted.push(...originals.flatMap((doc, index) => {
+            const pages = doc.pages.filter(page => !evidence[index].pages.some(part =>
+              part.page === page.page && part.text === page.text)).map(page => page.page);
+            return pages.length ? [{ target: task.target.id, document: doc.id, pages, reason: '쪽별 발췌에서 생략된 본문은 미검토' }] : [];
+          }));
+        }
+        outputs.push(maxTokens);
         let rows = [];
-        let reason = '검증 가능한 규칙별 응답 또는 원문 인용이 없음';
+        let failure;
         try {
           used.push(...evidence.map(doc => ({ target: task.target.id, document: doc.id,
-            pages: doc.pages.map(page => page.page), rules: focused.rules.map(([rule]) => rule), fragment: !!fragment })));
-          const response = await client.chatWithRetry(messages, options);
-          if (response.truncated) reason = '모델 응답이 생성 한도에 도달함';
-          else rows = PatentRules.readFindings(response.content, focused.rules, evidence, task.target.id);
+            pages: [...new Set(doc.pages.map(page => page.page))], rules: focused.rules.map(([rule]) => rule), fragment: excerpted })));
+          const response = await client.chatWithRetry(messages, { ...options, maxTokens });
+          if (response.truncated) failure = '모델 응답이 생성 한도에 도달함';
+          else rows = PatentRules.readFindings(response.content, focused.rules, evidence, task.target.id, focused.requiredOriginals);
         } catch (error) {
           signal.throwIfAborted();
-          reason = error.getUserMessage?.() || reason;
+          failure = error.getUserMessage?.();
         }
         for (const [rule] of focused.rules) {
           const row = rows.find(item => item.rule === rule);
-          const missing = rule === 'OA-07' && reason === '검증 가능한 규칙별 응답 또는 원문 인용이 없음'
-            ? '검증 가능한 OA-07 응답 또는 인용발명 원문의 대조 근거가 없음' : reason;
-          if (!fragment) findings.push(row || notChecked(task.target.id, rule, missing));
-          else if (row?.level === '조건부 점검') findings.push({ ...row, fragment: true });
+          if (excerpted && row?.level === '검토한 규칙에서 발견되지 않음') {
+            findings.push(notChecked(task.target.id, rule, '쪽별 발췌만 검토하여 발견 없음은 확인할 수 없음'));
+          } else {
+            const evidenceReasons = {
+              'OA-07': '검증 가능한 OA-07 응답 또는 인용발명 원문의 대조 근거가 없음',
+              'OA-15': '최후통지·선행 통지 및 필요한 인용발명·명세서 원문의 대조 근거가 부족함'
+            };
+            const missing = failure || evidenceReasons[rule] || '검증 가능한 규칙별 응답 또는 원문 인용이 없음';
+            findings.push(row ? { ...row, fragment: excerpted } : notChecked(task.target.id, rule, missing));
+          }
         }
       }
     }
@@ -170,22 +261,27 @@ const PatentDiagnosis = (() => {
     let status = 'completed';
     if (!tasks.length && !evaluated) status = 'no_evidence';
     else if (record.collectionStatus !== 'complete' || !evaluated
-      || findings.some(row => row.level === '확인 불가')) status = 'partial';
+      || omitted.length || findings.some(row => row.level === '확인 불가')) status = 'partial';
     return { application: record.application, queriedAt: record.queriedAt, historyStatus: record.historyStatus,
       collectionStatus: record.collectionStatus, claimStatus: record.claimStatus,
       registeredClaimStatus: record.registeredClaimStatus, status,
       documents: record.docs.map(({ id, title, date, kind, status, processing, size, pageCount, source, gazetteNumber }) =>
         ({ id, title, date, kind, status, processing, size, pageCount, source, gazetteNumber })),
-      versions, findings, used, omitted, calls };
+      versions, findings, used, omitted, calls: outputs.length, tokenBudget: { requested,
+        outputPerCall: Math.max(0, ...outputs), minOutputPerCall: outputs.length ? Math.min(...outputs) : 0 } };
   }
 
   function format(report) {
+    const budget = report.tokenBudget;
+    const applied = budget?.minOutputPerCall && budget.minOutputPerCall !== budget.outputPerCall
+      ? `${budget.minOutputPerCall}–${budget.outputPerCall}` : budget?.outputPerCall || '호출 없음';
     const lines = [
       '# 특허 심사품질 진단', '', `출원번호 ${report.application}`,
       `조회 시각 ${report.queriedAt || '—'}`,
       `이력 ${Kipris.messages[report.historyStatus] || report.historyStatus}`,
       `청구항 변동 ${Kipris.messages[report.claimStatus] || report.claimStatus || '—'}`,
       `등록청구항 ${Kipris.messages[report.registeredClaimStatus] || report.registeredClaimStatus || '—'}`,
+      ...(budget ? [`출력 예산 요청 ${budget.requested} · 호출당 적용 ${applied}`] : []),
       '', '## 문서와 확보 상태'
     ];
     for (const doc of report.documents) lines.push(
@@ -198,7 +294,7 @@ const PatentDiagnosis = (() => {
     }
     lines.push('', '## 규칙별 점검');
     for (const item of report.findings) {
-      lines.push('', `### ${item.rule} · ${item.target} · ${item.level}`, `진단코드 ${item.code || '미부여'}`);
+      lines.push('', `### ${item.rule} · ${item.target} · ${item.level}${item.fragment ? ' · 원문 발췌 범위' : ''}`, `진단코드 ${item.code || '미부여'}`);
       for (const ref of item.evidence) lines.push(`- 근거 ${ref.document} ${ref.page}쪽: ${ref.quote}`);
       lines.push(`- 비교 ${item.comparison}`, `- 분석 ${item.analysis}`, `- 판정 ${item.verdict}`);
     }
