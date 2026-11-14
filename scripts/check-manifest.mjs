@@ -15,7 +15,6 @@ const dependencies = [
     .map(([, source]) => source)),
   ...[...readFileSync(worker, 'utf8').match(/importScripts\(([^)]*)\)/)[1].matchAll(/'([^']+)'/g)]
     .map(([, source]) => source),
-  'kipris-pdf-runtime.mjs',
   'vendor/pdfjs/build/pdf.min.mjs',
   'vendor/pdfjs/build/pdf.worker.min.mjs'
 ];

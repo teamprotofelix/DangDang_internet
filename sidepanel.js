@@ -177,7 +177,7 @@ class SidePanelController {
       this.btnModeCode.addEventListener('click', () => this.setAppMode('code'));
     }
     this.coding = new CodingPanel(this);
-    this.patents = new PatentPanel(this);
+    this.kipris = new KiprisPanel(this);
     this.bindFileUploads();
 
     // Background 메시지 수신
@@ -1484,7 +1484,7 @@ class SidePanelController {
 
     if (next === 'work') {
       this.updateAvatarMood('study');
-      this.moodLabel.textContent = '업무 중 📚';
+      this.moodLabel.textContent = 'KIPRIS';
     } else if (next === 'code') {
       this.updateAvatarMood('think');
       this.moodLabel.textContent = '코딩 중 ⚡';

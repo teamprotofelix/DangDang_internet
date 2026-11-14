@@ -16,9 +16,7 @@ importScripts(
   'api.js',
   'kipris.js',
   'patent-store.js',
-  'patent-rules.js',
-  'patent-diagnosis.js',
-  'patent-worker.js'
+  'kipris-worker.js'
 );
 
 // The worker is the single writer for the separate local play-memory document.
@@ -715,7 +713,7 @@ async function processUserMessage(userText, opts = {}) {
 // ============================================================
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (['kipris_pdf_parse', 'kipris_pdf_parse_panel'].includes(message?.type)) return false;
+  if (message?.type === 'kipris_pdf_identity') return false;
   handleMessage(message, sender).then(sendResponse).catch(err => {
     sendResponse({ type: MSG_ERROR, data: { message: err.message } });
   });
@@ -727,7 +725,7 @@ async function handleMessage(message, sender) {
   const trusted = isTrustedExtensionUI(sender);
   if (typeof type === 'string' && type.startsWith('kipris_')) {
     if (!trusted) return { type: 'denied' };
-    try { return await PatentWorker.handle(type, data); }
+    try { return await KiprisWorker.handle(type, data); }
     catch (error) {
       return { error: error instanceof Kipris.Error || error instanceof APIError
         ? error.message : '특허 서류 작업 중 오류가 발생했습니다.' };
