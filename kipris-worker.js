@@ -174,7 +174,24 @@ const KiprisWorker = (() => {
     signal.throwIfAborted();
     if (!result) throw new Kipris.Error('pdf_checker');
     if (result.error === 'pdf_read') throw new Kipris.Error('pdf_read');
-    if (result.verified !== true) throw new Kipris.Error('identity');
+    if (!result.identity) throw new Kipris.Error('identity');
+    return result.identity;
+  }
+
+  async function rememberGazetteNumber(app, doc, number, signal) {
+    await navigator.locks.request('dangdang-kipris-history', async () => {
+      const state = await readSearch();
+      signal.throwIfAborted();
+      const gazettes = state.gazetteNumbers?.[app] || {};
+      const previous = gazettes[doc.id];
+      if (previous && previous !== number) throw new Kipris.Error('identity');
+      if (!previous) {
+        await chrome.storage.local.set({ [searchKey]: { ...state, gazetteNumbers: {
+          ...state.gazetteNumbers, [app]: { ...gazettes, [doc.id]: number }
+        } } });
+      }
+    });
+    signal.throwIfAborted();
   }
 
   async function start(type, data) {
@@ -196,11 +213,13 @@ const KiprisWorker = (() => {
         signal.throwIfAborted();
         return { result };
       }
-      const { result } = await readSearch();
+      const { result, gazetteNumbers } = await readSearch();
       const doc = result?.app === app && result.docs.find(row => row.id === data.documentId);
       if (!doc || !Kipris.canDownload(doc)) throw new Kipris.Error('lookup_required');
+      const numberless = Kipris.isGazette(doc.kind) && !doc.gazetteNumber;
+      const remembered = numberless && gazetteNumbers?.[app]?.[doc.id];
       let bytes;
-      let identity = doc;
+      let identity = remembered ? { ...doc, gazetteNumber: remembered } : doc;
       for (let attempt = 0; ; attempt++) {
         const location = await documentPath(doc, app, key, signal);
         const path = typeof location === 'string' ? location : location.path;
@@ -213,7 +232,11 @@ const KiprisWorker = (() => {
       let binary = '';
       for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
       const encoded = btoa(binary);
-      if (Kipris.isGazette(doc.kind) || Kipris.isCorrectionGazette(doc.kind)) await verifyPdf(encoded, app, identity, signal);
+      if (Kipris.isGazette(doc.kind) || Kipris.isCorrectionGazette(doc.kind)) {
+        const verified = await verifyPdf(encoded, app, identity, signal);
+        if (numberless) await rememberGazetteNumber(app, doc, verified.number, signal);
+      }
+      signal.throwIfAborted();
       return { pdf: encoded };
     } catch (error) {
       throw new Kipris.Error(operation.controller.signal.aborted ? 'cancelled'
@@ -234,8 +257,10 @@ const KiprisWorker = (() => {
         if (app) await PatentStore.remove(app);
         else await PatentStore.clear();
         if (!app || app === legacy) await chrome.storage.local.remove(legacyKey);
+        const gazetteNumbers = app ? { ...state.gazetteNumbers } : {};
+        if (app) delete gazetteNumbers[app];
         await chrome.storage.local.set({ [searchKey]: {
-          clearId: crypto.randomUUID(), clearedApp: app,
+          gazetteNumbers, clearId: crypto.randomUUID(), clearedApp: app,
           recent: app ? state.recent.filter(item => item !== app) : [],
           result: app && state.result?.app !== app ? state.result : null
         } });

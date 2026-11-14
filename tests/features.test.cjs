@@ -281,14 +281,22 @@ test('번호 없는 공보의 임시 토큰만 바뀌면 식별자를 유지하�
 
 test('정정공보는 PDF 첫 쪽에서 출원·종류·일자·일련번호를 확인', () => {
   const { KiprisPdfIdentity } = testRuntime();
-  const header = '정정공고(공개)\n출원번호 ' + app + '\n공개번호 10-9999-0000011\n2099.01.11\n';
+  const header = '정정공고(공개)\n출원번호 ' + app + '\n공개번호 10-9999-0000011\n정정공고일 2099.01.11\n';
   const doc = { kind: 'CORR_PUB', date: '20990111', serial: '1' };
-  const match = text => KiprisPdfIdentity.matches(text, app, doc);
+  const match = text => !!KiprisPdfIdentity.read(text, app, doc);
   assert.equal(match(header + '정정공고일련번호 ０１'), true);
   assert.equal(match(header + '정정공고일련번호 2'), false);
   assert.equal(match(header), false);
   assert.equal(match(header.replace(app, '1099990000002') + '정정공고번호 1'), false);
   assert.equal(match(header + '정정공고번호 1\n정정공고번호 2'), false);
+  assert.equal(match(header.replace('2099.01.11', '2099.01.12') + '공개일 2099.01.11\n정정공고번호 1'), false);
+  assert.equal(match(header.replace('정정공고일 ', '공개일 ') + '정정공고번호 1'), false);
+  assert.equal(match(header.replace('정정공고(공개)', '정정공고(등록)') + '등록번호 10-0000003\n정정공고번호 1'), false);
+  assert.equal(match(header + '정정공고일자 2099년 1월 12일\n정정공고번호 1'), false);
+  const registration = header.replace('정정공고(공개)', '등록특허 정정공보')
+    + '등록번호 10-0000003\n정정공고번호 1';
+  assert.equal(KiprisPdfIdentity.read(registration, app, { ...doc, kind: 'CORR_REG' }).number, '100000003');
+
 });
 
 test('PDF 다운로드는 서명·종료 표시·크기를 검사', () => {

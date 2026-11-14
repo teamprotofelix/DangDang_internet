@@ -22,7 +22,7 @@ async function readIdentity({ encoded, app, doc }) {
     const content = await page.getTextContent();
     const text = content.items.map(item => typeof item.str === 'string'
       ? item.str + (item.hasEOL ? '\n' : ' ') : '').join('');
-    return globalThis.KiprisPdfIdentity.matches(text, app, doc);
+    return globalThis.KiprisPdfIdentity.read(text, app, doc);
   } finally {
     clearTimeout(timeout);
     await loading.destroy().catch(() => {});
@@ -32,6 +32,6 @@ async function readIdentity({ encoded, app, doc }) {
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (message?.type !== 'kipris_pdf_identity' || sender.id !== chrome.runtime.id || sender.tab
     || sender.url !== chrome.runtime.getURL('background.js')) return false;
-  readIdentity(message).then(verified => reply({ verified }), () => reply({ error: 'pdf_read' }));
+  readIdentity(message).then(identity => reply({ identity }), () => reply({ error: 'pdf_read' }));
   return true;
 });

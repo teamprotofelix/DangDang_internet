@@ -9,8 +9,12 @@ const { app, send, date, testPdf } = require('./pdf-fixture.cjs');
 const pubNumbers = ['1099990000011', '1099990000012'];
 const pubPdfs = pubNumbers.map(number => testPdf(['공개특허공보', '출원번호 ' + app, '공개번호 ' + number]));
 const correctionDate = '20990111';
-const correct2 = testPdf(['정정공고(공개)', '출원번호 ' + app,
-  '공개번호 ' + pubNumbers[0], '2099.01.11', '정정공고일련번호 2']);
+const correctionPdf = (kind, day) => testPdf(['정정공고(' + kind + ')', '출원번호 ' + app,
+  '공개번호 ' + pubNumbers[0], '등록번호 100000003', '공개일 2099.01.11',
+  '정정공고일 2099.01.' + day, '정정공고일련번호 2']);
+const correct2 = correctionPdf('공개', '11');
+const wrongCorrectionDate = correctionPdf('공개', '12');
+const wrongCorrectionType = correctionPdf('등록', '11');
 const trial = '2099100000123';
 const trialPdf = testPdf(['심결문', '사건 2099당123', '2099.01.09']);
 
@@ -32,7 +36,7 @@ async function main() {
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     page.on('dialog', dialog => dialog.dismiss());
-    await worker.evaluate(({ app, send, date, pdf, pubNumbers, pubPdfs, trial, trialPdf, correctionDate, correct2 }) => {
+    await worker.evaluate(({ app, send, date, pdf, pubNumbers, pubPdfs, trial, trialPdf, correctionDate, correct2, wrongCorrectionDate, wrongCorrectionType }) => {
       const realFetch = globalThis.fetch;
       const historyRow = (number, title, extra = '') => '<item><applicationNumber>' + app
         + '</applicationNumber><documentNumber>' + number + '</documentNumber><documentTitle>' + title
@@ -100,9 +104,12 @@ async function main() {
         if (!url.pathname.endsWith('.pdf')) return xml('<items/>');
         fixture.pdfs.push(url.pathname + url.search);
         if (fixture.mode === 'zero') return new Response('<html>error</html>');
-        if (url.pathname.startsWith('/correction-')) return new Response(correct2);
+        if (url.pathname.startsWith('/correction-')) {
+          return new Response(fixture.wrongCorrection === 'date' ? wrongCorrectionDate
+            : fixture.wrongCorrection === 'type' ? wrongCorrectionType : correct2);
+        }
         if (url.pathname === '/fixture-0-stable.pdf' && fixture.wrongGazette) {
-          return new Response(pdf);
+          return new Response(pubPdfs[1]);
         }
         if (url.pathname === '/fixture-trial.pdf') return new Response(trialPdf);
         if (url.pathname === '/fixture-reg.pdf') return new Response(pdf);
@@ -117,7 +124,7 @@ async function main() {
         settings: { onboardingDismissed: true },
         code_session: { prompt: '레거시', html: '<p>이전 세션</p>' }
       });
-    }, { app, send, date, pdf: testPdf(), pubNumbers, pubPdfs, trial, trialPdf, correctionDate, correct2 });
+    }, { app, send, date, pdf: testPdf(), pubNumbers, pubPdfs, trial, trialPdf, correctionDate, correct2, wrongCorrectionDate, wrongCorrectionType });
     const browserCode = [];
     let delayed;
     let releaseDelayed;
@@ -482,6 +489,14 @@ async function main() {
     const correct = await readDownload(correction(2).getByRole('button', { name: 'PDF 다운로드' }));
     assert.ok(correct.name.endsWith('-2.pdf'));
     assert.equal(correct.bytes.toString(), correct2);
+    for (const wrongCorrection of ['date', 'type']) {
+      await worker.evaluate(value => { globalThis.fixture.wrongCorrection = value; }, wrongCorrection);
+      await page.evaluate(() => { document.querySelector('#patent-status').textContent = ''; });
+      await correction(2).getByRole('button', { name: 'PDF 다운로드' }).click();
+      await mismatch().waitFor();
+      assert.equal(downloads.length, beforeMismatch + 1);
+    }
+    await worker.evaluate(() => { globalThis.fixture.wrongCorrection = null; });
     const numberless = page.getByRole('row').filter({ hasText: '공개공보' });
     // The persisted row contains a fingerprint, so use a distinct date-free order-independent locator.
     const numberlessRows = await worker.evaluate(() => chrome.storage.local.get('kipris_download_search'));
@@ -493,21 +508,38 @@ async function main() {
     const rotatingButton = numberless.nth(publishedIndex).getByRole('button', { name: 'PDF 다운로드' });
     const rotated = await readDownload(rotatingButton);
     assert.equal(rotated.bytes.toString(), pubPdfs[0]);
+    await page.reload();
+    await page.locator('#btn-mode-work[aria-selected="true"]').waitFor();
+    await correction(2).waitFor();
+    await page.click('#patent-lookup');
+    await page.getByText('서류 8건', { exact: true }).waitFor();
+    const state = await worker.evaluate(() => chrome.storage.local.get('kipris_download_search'));
+    assert.equal(state.kipris_download_search.gazetteNumbers[app]['PUB-' + directId], pubNumbers[0]);
+    const newIndex = state.kipris_download_search.result.docs.filter(doc => doc.kind === 'PUB')
+      .findIndex(doc => doc.id === 'PUB-' + directId);
+    const refreshedButton = numberless.nth(newIndex).getByRole('button', { name: 'PDF 다운로드' });
+    assert.equal((await readDownload(refreshedButton)).bytes.toString(), pubPdfs[0]);
+    const afterRefresh = downloads.length;
     await worker.evaluate(() => { globalThis.fixture.wrongGazette = true; });
-    await rotatingButton.click();
+    await refreshedButton.click();
     await mismatch().waitFor();
+    assert.equal(downloads.length, afterRefresh);
     await worker.evaluate(() => { globalThis.fixture.wrongGazette = false; globalThis.fixture.changedSelector = true; });
     const beforeSelectorChange = await worker.evaluate(() => globalThis.fixture.pdfs.length);
     await page.evaluate(() => { document.querySelector('#patent-status').textContent = ''; });
-    await rotatingButton.click();
+    await refreshedButton.click();
     await mismatch().waitFor();
     assert.equal(await worker.evaluate(() => globalThis.fixture.pdfs.length), beforeSelectorChange);
     await page.waitForFunction(() => !document.querySelector('#patent-lookup').disabled);
     await page.evaluate(() => { document.querySelector('#patent-status').textContent = ''; });
-    await numberless.nth(1 - publishedIndex).getByRole('button', { name: 'PDF 다운로드' }).click();
+    await numberless.nth(1 - newIndex).getByRole('button', { name: 'PDF 다운로드' }).click();
     await mismatch().waitFor();
     assert.equal(await worker.evaluate(() => globalThis.fixture.pdfs.length), beforeSelectorChange);
     assert.deepEqual(await legacy(), [[], []]);
+    await page.click('#patent-delete');
+    await page.getByText('이 출원의 조회 기록을 지웠습니다.').waitFor();
+    assert.deepEqual(await worker.evaluate(async () =>
+      (await chrome.storage.local.get('kipris_download_search')).kipris_download_search.gazetteNumbers), {});
     assert.deepEqual(errors, []);
     console.log('Chromium installed extension passed KIPRIS downloads, data deletion and cross-panel code reset.');
   } finally {
