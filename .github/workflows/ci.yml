@@ -28,7 +28,7 @@ jobs:
       - name: Check JavaScript syntax
         run: |
           set -e
-          for file in ./*.js ./scripts/*.mjs ./tests/*.cjs; do
+          for file in ./*.js ./*.mjs ./scripts/*.mjs ./tests/*.cjs; do
             node --check "$file"
           done
 

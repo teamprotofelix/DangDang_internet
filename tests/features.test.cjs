@@ -4,13 +4,13 @@ const { test } = require('node:test');
 const vm = require('node:vm');
 const { testPdf } = require('./pdf-fixture.cjs');
 
-const paths = ['config.js', 'utils.js', 'api.js', 'coding.js', 'file-io.js', 'kipris.js'];
+const paths = ['config.js', 'utils.js', 'api.js', 'coding.js', 'file-io.js', 'kipris.js', 'kipris-pdf-identity.js'];
 const source = paths.map(path => readFileSync(path, 'utf8')).join('\n');
 const testRuntime = fetch => {
   const ctx = vm.createContext({ URL, fetch, AbortController, AbortSignal, setTimeout, clearTimeout,
     TextDecoder, TextEncoder, Blob, Response, crypto, console: { warn() {} } });
   return vm.runInContext(source + `\n({ CONFIG, LLMClient, chatCompletionURL, buildChatCompletionRequest,
-    CodeProjects, FileIO, Kipris, computeRequestBudget, resolveKeyForOrigin, isTrustedExtensionUI })`, ctx);
+    CodeProjects, FileIO, Kipris, KiprisPdfIdentity, computeRequestBudget, resolveKeyForOrigin, isTrustedExtensionUI })`, ctx);
 };
 const plain = value => JSON.parse(JSON.stringify(value));
 const app = '1099990000001';
@@ -259,6 +259,36 @@ test('공보 경로는 공보번호를 우선하며 번호 없는 경로는 정�
   assert.deepEqual(Array.from(locations, item => item.gazetteNumber), ['1020990000011', '1020990000012', null, null]);
   assert.match(locations[2].gazetteLocator, /^[a-f0-9]{64}$/);
   assert.notEqual(locations[2].gazetteLocator, locations[3].gazetteLocator);
+});
+
+test('번호 없는 공보의 임시 토큰만 바뀌면 식별자를 유지하고 불투명 주소나 문서 선택자는 유지', async () => {
+  let turn = 0;
+  const { Kipris } = testRuntime(async () => {
+    turn++;
+    return new Response(xml('<items>' + [
+      '/file.pdf?document=1&amp;token=' + turn,
+      '/file.pdf?document=' + (turn + 1) + '&amp;token=' + turn,
+      '/fileToss.jsp?arg=' + turn
+    ].map(path => '<item><path>' + path + '</path></item>').join('') + '</items>'));
+  });
+  const query = () => Kipris.pdfLocations('PUB', app, 'fixture', AbortSignal.timeout(1000));
+  const a = await query();
+  const b = await query();
+  assert.equal(a[0].gazetteLocator, b[0].gazetteLocator);
+  assert.notEqual(a[1].gazetteLocator, b[1].gazetteLocator);
+  assert.notEqual(a[2].gazetteLocator, b[2].gazetteLocator);
+});
+
+test('정정공보는 PDF 첫 쪽에서 출원·종류·일자·일련번호를 확인', () => {
+  const { KiprisPdfIdentity } = testRuntime();
+  const header = '정정공고(공개)\n출원번호 ' + app + '\n공개번호 10-9999-0000011\n2099.01.11\n';
+  const doc = { kind: 'CORR_PUB', date: '20990111', serial: '1' };
+  const match = text => KiprisPdfIdentity.matches(text, app, doc);
+  assert.equal(match(header + '정정공고일련번호 ０１'), true);
+  assert.equal(match(header + '정정공고일련번호 2'), false);
+  assert.equal(match(header), false);
+  assert.equal(match(header.replace(app, '1099990000002') + '정정공고번호 1'), false);
+  assert.equal(match(header + '정정공고번호 1\n정정공고번호 2'), false);
 });
 
 test('PDF 다운로드는 서명·종료 표시·크기를 검사', () => {

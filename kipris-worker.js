@@ -6,6 +6,7 @@ const KiprisWorker = (() => {
   const restrictStorage = chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }).then(() => true, () => false);
   let active;
   let clearing = false;
+  const pdfChecker = chrome.runtime.getURL('kipris-offscreen.html');
 
   const readSearch = async () => (await chrome.storage.local.get(searchKey))[searchKey] || { recent: [], result: null };
   const getKey = async () => (await chrome.storage.local.get(keyName))[keyName] || '';
@@ -89,8 +90,11 @@ const KiprisWorker = (() => {
       }
       return indexedPath(gazettes(doc.kind, rows, app), doc);
     }
-    if (Kipris.isCorrectionGazette(doc.kind)) return indexedPath(corrections(
-      await Kipris.correctionLocations(app, key, signal), app), doc);
+    if (Kipris.isCorrectionGazette(doc.kind)) {
+      const rows = corrections(await Kipris.correctionLocations(app, key, signal), app);
+      const path = indexedPath(rows, doc);
+      return { path, identity: { ...doc, serial: rows.find(row => row.id === doc.id).serial } };
+    }
     if (Kipris.isTrialDecision(doc.kind)) return trialPath(doc, app, key, signal);
     return noticePath(await Kipris.pdfLocations(doc.kind, app, key, signal, doc.id), app, doc.id);
   }
@@ -150,6 +154,29 @@ const KiprisWorker = (() => {
     return { app, docs, warnings, historyStatus };
   }
 
+  async function verifyPdf(encoded, app, doc, signal) {
+    let result;
+    try {
+      const contexts = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'], documentUrls: [pdfChecker] });
+      signal.throwIfAborted();
+      if (!contexts.length) {
+        await chrome.offscreen.createDocument({ url: pdfChecker, reasons: ['WORKERS'],
+          justification: 'Verify document identifiers locally before saving a KIPRIS PDF.' });
+      }
+      signal.throwIfAborted();
+      result = await chrome.runtime.sendMessage({ type: 'kipris_pdf_identity', encoded, app, doc });
+    } catch {
+      signal.throwIfAborted();
+      throw new Kipris.Error('pdf_checker');
+    } finally {
+      try { await chrome.offscreen.closeDocument(); } catch { /* No document is open. */ }
+    }
+    signal.throwIfAborted();
+    if (!result) throw new Kipris.Error('pdf_checker');
+    if (result.error === 'pdf_read') throw new Kipris.Error('pdf_read');
+    if (result.verified !== true) throw new Kipris.Error('identity');
+  }
+
   async function start(type, data) {
     if (active || clearing) throw new Kipris.Error('busy');
     const app = Kipris.applicationNumber(data.application);
@@ -173,8 +200,11 @@ const KiprisWorker = (() => {
       const doc = result?.app === app && result.docs.find(row => row.id === data.documentId);
       if (!doc || !Kipris.canDownload(doc)) throw new Kipris.Error('lookup_required');
       let bytes;
+      let identity = doc;
       for (let attempt = 0; ; attempt++) {
-        const path = await documentPath(doc, app, key, signal);
+        const location = await documentPath(doc, app, key, signal);
+        const path = typeof location === 'string' ? location : location.path;
+        if (typeof location !== 'string') identity = location.identity;
         try { bytes = await Kipris.download(path, signal); break; }
         catch (error) { if (attempt || error.code !== 'expired_path') throw error; }
       }
@@ -182,7 +212,9 @@ const KiprisWorker = (() => {
       signal.throwIfAborted();
       let binary = '';
       for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
-      return { pdf: btoa(binary) };
+      const encoded = btoa(binary);
+      if (Kipris.isGazette(doc.kind) || Kipris.isCorrectionGazette(doc.kind)) await verifyPdf(encoded, app, identity, signal);
+      return { pdf: encoded };
     } catch (error) {
       throw new Kipris.Error(operation.controller.signal.aborted ? 'cancelled'
         : signal.aborted ? 'timeout' : reason(error));

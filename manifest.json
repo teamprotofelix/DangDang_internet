@@ -6,6 +6,7 @@
   "description": "귀여운 반려 AI - 당신의 브라우저 친구",
   "permissions": [
     "sidePanel",
+    "offscreen",
     "storage",
     "alarms",
     "tabs",

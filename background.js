@@ -713,6 +713,7 @@ async function processUserMessage(userText, opts = {}) {
 // ============================================================
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === 'kipris_pdf_identity') return false;
   handleMessage(message, sender).then(sendResponse).catch(err => {
     sendResponse({ type: MSG_ERROR, data: { message: err.message } });
   });

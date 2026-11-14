@@ -29,6 +29,8 @@ const Kipris = (() => {
     pdf_empty: '다운로드 응답에 파일 내용이 없음',
     pdf_size: 'PDF가 다운로드 상한 20 MB를 초과함',
     pdf_format: '서버 응답에 PDF 파일 서명이 없음',
+    pdf_read: 'PDF의 첫 쪽을 읽을 수 없어 문서를 확인하지 못했습니다.',
+    pdf_checker: 'PDF 확인 모듈을 열 수 없습니다. 설치용 ZIP으로 확장을 다시 로드해 주세요.',
     pdf_incomplete: 'PDF 끝 표시가 없어 파일이 불완전함',
     identity: 'PDF의 문서 식별자를 확인하지 못했거나 응답이 불일치함',
     metadata_only: '원문 PDF 미제공 · 이력 또는 서지 정보 조회 가능',
@@ -325,6 +327,13 @@ const Kipris = (() => {
       .filter(candidate => candidate !== app);
     const numbers = declared ? gazetteNumbers(kind, declared) : fromName;
     const gazetteNumber = numbers.length === 1 ? numbers[0] : null;
+    // Only known rotating parameters on a concrete PDF path may be dropped.
+    // Keep opaque selectors (for example fileToss.jsp?arg=...) and all other query parameters.
+    if (url && /\.pdf$/i.test(url.pathname)) {
+      for (const name of ['token', 'ticket', 'signature', 'expires']) {
+        if (url.searchParams.has(name)) url.searchParams.delete(name);
+      }
+    }
     const fingerprint = url && await crypto.subtle.digest('SHA-256', new TextEncoder().encode(url.href));
     const gazetteLocator = fingerprint && Array.from(new Uint8Array(fingerprint), byte => byte.toString(16).padStart(2, '0')).join('');
     return { path, application, gazetteNumber, gazetteLocator, ambiguous: numbers.length > 1 || !!declared && !gazetteNumber };
