@@ -14,42 +14,23 @@ const PatentStore = (() => {
     return database;
   }
 
-  async function operation(mode, act, name = 'cases') {
+  async function erase(app) {
     const db = await open();
-    return new Promise((resolve, reject) => {
-      const transaction = db.transaction(name, mode);
-      const request = act(transaction.objectStore(name));
-      transaction.oncomplete = () => resolve(request.result);
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction(['cases', 'files'], 'readwrite');
+      const cases = transaction.objectStore('cases');
+      const files = transaction.objectStore('files');
+      if (app) {
+        cases.delete(app);
+        files.delete(IDBKeyRange.bound([app], [app, []]));
+      } else {
+        cases.clear();
+        files.clear();
+      }
+      transaction.oncomplete = resolve;
       transaction.onabort = () => reject(transaction.error);
-      transaction.onerror = () => reject(transaction.error);
     });
   }
 
-  return {
-    get: id => operation('readonly', store => store.get(id)),
-    save: record => operation('readwrite', store => store.put(record, record.application)),
-    file: (app, id) => operation('readonly', store => store.get([app, id]), 'files'),
-    async saveWithFile(record, id, bytes, removeIds = []) {
-      const db = await open();
-      await new Promise((resolve, reject) => {
-        const transaction = db.transaction(['cases', 'files'], 'readwrite');
-        transaction.objectStore('cases').put(record, record.application);
-        const files = transaction.objectStore('files');
-        for (const removeId of removeIds) files.delete([record.application, removeId]);
-        if (id !== null) files.put(bytes, [record.application, id]);
-        transaction.oncomplete = resolve;
-        transaction.onabort = () => reject(transaction.error);
-      });
-    },
-    async remove(app) {
-      const db = await open();
-      await new Promise((resolve, reject) => {
-        const transaction = db.transaction(['cases', 'files'], 'readwrite');
-        transaction.objectStore('cases').delete(app);
-        transaction.objectStore('files').delete(IDBKeyRange.bound([app], [app, []]));
-        transaction.oncomplete = resolve;
-        transaction.onabort = () => reject(transaction.error);
-      });
-    }
-  };
+  return { remove: erase, clear: () => erase(null) };
 })();

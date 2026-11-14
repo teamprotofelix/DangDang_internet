@@ -26,10 +26,23 @@ class CodingPanel {
     document.getElementById('btn-code-regen').onclick = () => this.regenerate();
     document.getElementById('btn-code-zip').onclick = () => this.downloadZip();
     this.cancel.onclick = () => this.stop();
+    this.resetButton = document.getElementById('btn-code-reset');
+    this.resetButton.onclick = () => this.reset();
+    this.resetChannel = new BroadcastChannel('dangdang-code-project');
+    this.resetChannel.onmessage = event => {
+      if (event.data === 'reset') this.stop();
+      else if (event.data === 'cleared' && !this.controller) {
+        this.prompt.value = '';
+      }
+    };
     this.ready = this.load();
     chrome.storage.onChanged.addListener((changes, area) => {
       const saved = changes[CONFIG.storageKeys.codeSession];
-      if (area !== 'local' || !saved || this.controller) return;
+      if (area !== 'local' || !saved || (this.controller && saved.newValue)) return;
+      if (!saved.newValue) {
+        this.stop();
+        this.prompt.value = '';
+      }
       this.session = CodeProjects.migrate(saved.newValue);
       this.render();
     });
@@ -140,13 +153,47 @@ class CodingPanel {
     if (!this.committing) this.controller?.abort();
   }
 
+  async reset() {
+    await this.ready;
+    if (this.resetting || !confirm('현재 프로젝트의 요청과 생성 파일을 지울까요? 대화 기록과 설정은 보존됩니다.')) return;
+    this.resetting = true;
+    this.resetButton.disabled = true;
+    this.stop();
+    try {
+      const reset = navigator.locks.request('dangdang-code-project', async () => {
+        const key = CONFIG.storageKeys.codeSession;
+        const stored = await chrome.storage.local.get([key, this.preferencesKey]);
+        if (!stored[this.preferencesKey] && stored[key]) {
+          const value = CodeProjects.migrate(stored[key]).language || 'auto';
+          const language = CodeProjects.language(value);
+          const preference = language === 'auto' || Object.hasOwn(CodeProjects.languages, language)
+            ? { value: language } : { value: '__custom__', custom: value };
+          await chrome.storage.local.set({ [this.preferencesKey]: { tab: preference, chat: preference } });
+        }
+        await chrome.storage.local.remove(key);
+      });
+      this.resetChannel.postMessage('reset');
+      await reset;
+      this.resetChannel.postMessage('cleared');
+      this.session = CodeProjects.migrate(null);
+      this.prompt.value = '';
+      this.render();
+      this.status.textContent = '프로젝트를 초기화했습니다.';
+    } catch {
+      this.status.textContent = '저장된 프로젝트를 지우지 못했습니다.';
+    } finally {
+      this.resetting = false;
+      this.resetButton.disabled = false;
+    }
+  }
+
   async run(rawPrompt, rawLanguage, revise, output = null, retry = null) {
     await this.ready;
     const fromChat = output === 'new';
     const status = fromChat ? this.chatStatus : output?.querySelector('.code-chat-status') || this.status;
     const prompt = rawPrompt.trim();
     const language = rawLanguage.trim().slice(0, 60);
-    if (this.controller) {
+    if (this.controller || this.resetting) {
       if (fromChat) status.textContent = '코드 생성이 진행 중입니다.';
       return;
     }

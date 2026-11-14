@@ -22,13 +22,13 @@ jobs:
           node-version: 24
           cache: npm
 
-      - name: Install dependencies and prepare PDF parser
+      - name: Install dependencies
         run: npm ci
 
       - name: Check JavaScript syntax
         run: |
           set -e
-          for file in ./*.js ./*.mjs ./scripts/*.mjs ./tests/*.cjs; do
+          for file in ./*.js ./scripts/*.mjs ./tests/*.cjs; do
             node --check "$file"
           done
 
@@ -38,7 +38,7 @@ jobs:
       - name: Test functionality with synthetic fixtures
         run: npm test
 
-      - name: Build installable extension with PDF.js
+      - name: Build installable extension
         run: npm run package:extension
 
       - name: Install Chromium

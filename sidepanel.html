@@ -24,7 +24,7 @@
       </div>
       <div class="mode-switch" role="tablist" aria-label="화면 전환">
         <button type="button" id="btn-mode-chat" class="mode-switch-btn active" role="tab" aria-selected="true">💬 대화</button>
-        <button type="button" id="btn-mode-work" class="mode-switch-btn" role="tab" aria-selected="false">💼 특허 진단</button>
+        <button type="button" id="btn-mode-work" class="mode-switch-btn" role="tab" aria-selected="false">KIPRIS</button>
         <button type="button" id="btn-mode-code" class="mode-switch-btn" role="tab" aria-selected="false">⚡ 코딩</button>
       </div>
       <div class="header-actions">
@@ -296,29 +296,24 @@
     <!-- ====== 업무 모드 패널 (숨김) ====== -->
     <div id="work-panel" class="work-panel hidden">
       <div class="work-scroll">
-        <div class="work-header"><h2>특허 심사품질 진단</h2></div>
+        <div class="work-header"><h2>KIPRIS 서류 다운로드</h2></div>
         <label class="setting-label" for="patent-application">출원번호</label>
         <input id="patent-application" class="setting-input" placeholder="특허·실용신안 13자리" inputmode="numeric" />
+        <label class="setting-label" for="kipris-recent">최근 조회</label>
+        <select id="kipris-recent" class="setting-input"></select>
         <div class="work-actions patent-actions">
-          <button id="patent-lookup" class="work-btn" type="button">서류 조회·다운로드</button>
-          <button id="patent-start" class="work-btn" type="button">진단 시작</button>
+          <button id="patent-lookup" class="work-btn" type="button">서류 조회</button>
           <button id="patent-cancel" class="btn-small" type="button" disabled>취소</button>
+          <button id="patent-delete" class="btn-small" type="button" disabled>이 출원 지우기</button>
+          <button id="kipris-clear-all" class="btn-small" type="button">검색 기록 전체 지우기</button>
         </div>
-        <p id="patent-status" role="status" aria-live="polite"></p>
         <p id="patent-history-status"></p>
         <div id="patent-docs"></div>
         <div class="code-gen-row patent-actions">
-          <button id="patent-zip" class="btn-small" type="button" disabled>원문 ZIP</button>
-          <button id="patent-delete" class="btn-small" type="button" disabled>이 출원 자료 삭제</button>
+          <button id="patent-zip" class="btn-small" type="button" hidden>전체 ZIP 다운로드</button>
         </div>
-        <div class="code-gen-row patent-actions" aria-label="진단 보고서 다운로드">
-          <button data-patent-format="md" class="btn-small" type="button" disabled>MD</button>
-          <button data-patent-format="txt" class="btn-small" type="button" disabled>TXT</button>
-          <button data-patent-format="json" class="btn-small" type="button" disabled>JSON</button>
-          <button data-patent-format="pdf" class="btn-small" type="button" disabled>PDF</button>
-          <button data-patent-format="hwpx" class="btn-small" type="button" disabled>HWPX</button>
-        </div>
-        <pre id="patent-report" class="patent-report" aria-label="진단 보고서"></pre>
+        <p id="patent-status" role="status" aria-live="polite"></p>
+        <ul id="kipris-download-failures"></ul>
       </div>
     </div>
 
@@ -336,6 +331,7 @@
           <button type="button" id="btn-code-revise" class="code-btn">수정 요청</button>
           <button type="button" id="btn-code-regen" class="code-btn" disabled>다시 생성</button>
           <button type="button" id="btn-code-cancel" class="code-btn" disabled>취소</button>
+          <button type="button" id="btn-code-reset" class="code-btn">프로젝트 초기화</button>
         </div>
         <label id="code-file-label" class="code-label" for="code-file-picker" hidden>프로젝트 파일</label>
         <select id="code-file-picker" class="setting-input" hidden></select>
@@ -406,11 +402,8 @@
   <script src="play-memory-client.js"></script>
   <script src="coding.js"></script>
   <script src="kipris.js"></script>
-  <script src="patent-store.js"></script>
-  <script src="patent-diagnosis.js"></script>
   <script src="coding-panel.js"></script>
-  <script src="patent-panel.js"></script>
-  <script type="module" src="kipris-pdf-panel.mjs"></script>
+  <script src="kipris-panel.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

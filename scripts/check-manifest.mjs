@@ -4,7 +4,7 @@ const manifest = JSON.parse(readFileSync('manifest.json', 'utf8'));
 if (manifest.manifest_version !== 3) throw new Error('Chrome Manifest V3 required');
 
 const worker = manifest.background.service_worker;
-const pages = [manifest.side_panel.default_path, 'kipris-offscreen.html'];
+const pages = [manifest.side_panel.default_path];
 const dependencies = [
   worker,
   ...pages,
@@ -14,10 +14,7 @@ const dependencies = [
   ...pages.flatMap(page => [...readFileSync(page, 'utf8').matchAll(/<script[^>]+src="([^"]+)"/g)]
     .map(([, source]) => source)),
   ...[...readFileSync(worker, 'utf8').match(/importScripts\(([^)]*)\)/)[1].matchAll(/'([^']+)'/g)]
-    .map(([, source]) => source),
-  'kipris-pdf-runtime.mjs',
-  'vendor/pdfjs/build/pdf.min.mjs',
-  'vendor/pdfjs/build/pdf.worker.min.mjs'
+    .map(([, source]) => source)
 ];
 for (const file of dependencies) if (!existsSync(file)) throw new Error('Missing file: ' + file);
 if (manifest.host_permissions.some(host => /^http:\/\//.test(host) && !/^http:\/\/(localhost|127\.0\.0\.1)\//.test(host))) {

@@ -1801,7 +1801,7 @@ textarea:focus-visible {
 .code-file-card { margin: 12px 0; min-width: 0; }
 .code-file-card h4 { margin: 0 0 6px; overflow-wrap: anywhere; }
 .code-filename { max-width: 14rem; }
-.project-code, .patent-report {
+.project-code {
   margin: 8px 0;
   padding: 10px;
   border-radius: 8px;
@@ -1812,7 +1812,7 @@ textarea:focus-visible {
 }
 .code-chat-project { max-width: 100%; }
 .patent-actions { margin: 10px 0; }
-.patent-report:empty { display: none; }
+#patent-zip[hidden], #kipris-download-failures:empty { display: none; }
 .patent-table { width: 100%; border-collapse: collapse; font-size: .8rem; }
 .patent-table th, .patent-table td { text-align: left; padding: 7px 5px; border-bottom: 1px solid rgba(127,127,127,.25); overflow-wrap: anywhere; }
 .patent-table td { vertical-align: top; }
